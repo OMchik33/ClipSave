@@ -1,45 +1,46 @@
-# Web YTD — закрытый веб‑сервис для скачивания медиа
+# Web YTD — закрытый веб-сервис для скачивания медиа
 
-Web YTD — это приватный веб‑сервис на FastAPI для скачивания видео и аудио по ссылке с различных интернет ресурсов (пользовательское соглашение которых позволяет подобное скачивание, либо если вы скачиваете свои собственные видео со своего канала)
+Web YTD — это приватный веб-сервис на FastAPI для скачивания видео, аудио и обложек по ссылке из различных интернет-ресурсов, если это допускается правилами соответствующего сервиса или если вы скачиваете собственный контент.
 
 <img width="1733" height="1029" alt="2026-04-15_20-41-31" src="https://github.com/user-attachments/assets/fc76b8c8-0a30-46d8-bb06-7531df8f9263" />
 
-ВНИМАНИЕ: ПРОЕКТ НА СТАДИИ ПРЕДВАРИТЕЛЬНОГО ТЕСТИРОВАНИЯ!
+> ВНИМАНИЕ: проект находится на стадии предварительного тестирования.
 
 
 ## Возможности
 
-* предварительный анализ ссылки перед загрузкой файла;
-* скачивание в нескольких удобных режимах: лучшее качество, вручную выбранный формат, MP3 или обложка;
-* встроенная очередь задач с ограничением количества одновременных загрузок;
-* персональная история скачиваний для каждого пользователя;
-* поддержка личного `cookies.txt` для пользователя и общего `cookies.txt` администратора;
-* два варианта доступа к сервису: постоянная ссылка входа и одноразовые ссылки-приглашения;
-* ручные метки для одноразовых ссылок, чтобы администратору было удобно различать выданные доступы;
-* возможность в любой момент отозвать доступ у конкретного пользователя;
-* контроль активности пользователей за последние 5 и 10 минут;
-* хранение пользователей, сессий, истории и ссылок доступа в SQLite;
-* раздача готовых файлов через Angie из каталога `/download`;
-* автоматическое удаление устаревших файлов из `/download`;
-* автоматическое ночное обновление `yt-dlp` и `yt-dlp-ejs`;
-* готовый автоустановщик: запуск из локального набора файлов или установка напрямую из GitHub/Git;
-* отдельный bash-скрипт для резервного копирования, восстановления и проверки базы SQLite.
+- предварительный анализ ссылки перед загрузкой файла;
+- скачивание в нескольких режимах: лучшее качество, вручную выбранный формат, MP3 или обложка;
+- встроенная очередь задач с ограничением количества одновременных загрузок;
+- персональная история скачиваний для каждого пользователя;
+- поддержка личного `cookies.txt` пользователя и общего `cookies.txt` администратора;
+- два варианта доступа: постоянная ссылка входа и одноразовые ссылки-приглашения;
+- ручные метки для одноразовых ссылок, чтобы администратору было удобно различать выданные доступы;
+- возможность в любой момент отозвать доступ у конкретного пользователя;
+- контроль активности пользователей за последние 5 и 10 минут;
+- хранение пользователей, сессий, истории и ссылок доступа в SQLite;
+- раздача готовых файлов через Angie из каталога `/download`;
+- автоматическое удаление устаревших файлов из `/download`;
+- автоматическое ночное обновление `yt-dlp` и `yt-dlp-ejs`;
+- готовый автоустановщик: запуск из локального набора файлов или развёртывание из GitHub/Git;
+- отдельный bash-скрипт для резервного копирования, восстановления и проверки базы SQLite.
 
 
 ## Что есть в репозитории
 
 - `web_ytd.py` — основной backend;
-- `templates/` — HTML‑шаблоны;
+- `templates/` — HTML-шаблоны;
 - `static/` — JS и CSS;
 - `.env.example` — понятный пример конфигурации;
-- `requirements.txt` — Python‑зависимости;
+- `requirements.txt` — Python-зависимости;
 - `install-versions.env` — переменные для автоустановки;
-- `scripts/install.sh` — bash‑скрипт автоустановки;
-- `scripts/ytd_db.sh` — bash‑скрипт для backup / restore / проверки SQLite;
-- `deploy/systemd/ytd_web.service` — пример systemd‑службы;
+- `scripts/install.sh` — bash-скрипт автоустановки;
+- `scripts/ytd_db.sh` — bash-скрипт для backup / restore / проверки SQLite;
+- `deploy/systemd/ytd_web.service` — пример systemd-службы;
 - `deploy/angie/site.conf.example` — пример конфига сайта для Angie;
 - `deploy/angie/download_filename_map.conf` — `map` для корректного имени скачиваемого файла;
-- `deploy/cron/crontab.example` — готовые строки для cron.
+- `deploy/angie/00-acme.conf.example` — пример глобальной ACME-настройки для Angie;
+- `deploy/cron/crontab.example` — пример системного cron-файла.
 
 ---
 
@@ -47,27 +48,40 @@ Web YTD — это приватный веб‑сервис на FastAPI для 
 
 ### Вариант A — установка из уже скачанного набора файлов
 
-Если у тебя есть ZIP‑архив проекта или локальная папка с файлами:
+Если у тебя есть ZIP-архив проекта или локальная папка с файлами:
 
 ```bash
-unzip ytd_repo_bundle_v2.zip -d /root/web-ytd-src
+unzip web-ytd.zip -d /root/web-ytd-src
 cd /root/web-ytd-src
 sudo bash scripts/install.sh
 ```
 
-Скрипт сам определит локальный режим и скопирует файлы проекта в рабочий каталог сервиса.
+Скрипт определит локальный режим и скопирует файлы проекта в рабочий каталог сервиса.
 
 ### Вариант B — установка из GitHub/Git
 
-```bash
-apt update
-apt install -y git
-git clone https://github.com/OMchik33/Web_YTD.git /root/web-ytd-installer
-cd /root/web-ytd-installer
+```
+sudo apt update
+sudo apt install -y git
+git clone https://github.com/OMchik33/Web_YTD.git /root/web-ytd-src
+cd /root/web-ytd-src
 sudo bash scripts/install.sh
 ```
 
-В этом режиме `install.sh` сам клонирует проект из GitHub и развернёт его в рабочий каталог.
+В этом варианте скрипт разворачивает сервис из уже клонированного репозитория.
+
+
+### Вариант C — запуск установщика в git-режиме
+
+Если ты используешь отдельный установочный набор файлов и хочешь, чтобы install.sh сам клонировал репозиторий:
+
+```
+sudo INSTALL_MODE=git \
+  GIT_REPO_URL="https://github.com/OMchik33/Web_YTD.git" \
+  GIT_BRANCH="main" \
+  bash scripts/install.sh
+```
+
 
 ---
 
@@ -78,17 +92,25 @@ sudo bash scripts/install.sh
 - проверяет, что ОС — Ubuntu 24.04;
 - ставит системные пакеты;
 - подключает официальный репозиторий Angie и ставит Angie;
-- **в самом начале создаёт `/opt/telegram-bots`**, чтобы не было ошибки на пустом родительском каталоге;
 - создаёт пользователя `botrunner`, каталог проекта и `/download`;
-- копирует проект из локальной папки или клонирует его из Git;
-- создаёт виртуальное окружение и ставит Python‑зависимости;
+- разворачивает проект из локальной папки или из GitHub/Git;
+- создаёт виртуальное окружение и ставит Python-зависимости;
 - создаёт `.env`, если его ещё нет;
-- раскладывает systemd‑службу;
-- раскладывает конфиг Angie;
+- раскладывает systemd-службу;
+- создаёт необходимые файлы для Angie:
+  - `download_filename_map.conf`,
+  - `00-acme.conf`,
+  - конфиг сайта;
 - включает UFW и открывает `22`, `80`, `443`;
-- создаёт cron‑задания:
+- создаёт системный cron-файл `/etc/cron.d/ytd_web`:
   - удаление файлов старше 30 минут из `/download` каждые 5 минут;
-  - обновление `yt-dlp` и `yt-dlp-ejs` в `04:00` по времени сервера.
+  - обновление `yt-dlp` и `yt-dlp-ejs` в `04:00` по времени сервера;
+- в конце выводит:
+  - путь к проекту,
+  - путь к `.env`,
+  - обычную ссылку входа,
+  - админскую ссылку входа,
+  - команды для проверки службы.
 
 После установки проверь:
 
@@ -155,7 +177,6 @@ sudo ufw status verbose
 ### 6. Создание пользователя и каталогов
 
 ```bash
-sudo mkdir -p /opt/telegram-bots
 sudo adduser --home /opt/telegram-bots --shell /bin/bash --disabled-password --gecos "" botrunner
 sudo mkdir -p /opt/telegram-bots/ytd_web
 sudo mkdir -p /download
@@ -208,7 +229,18 @@ sudo -u botrunner nano /opt/telegram-bots/ytd_web/.env
 
 ### 10. Настройка Angie под домен
 
-Скопируй `deploy/angie/download_filename_map.conf` в `/etc/angie/conf.d/`, а `deploy/angie/site.conf.example` — в `/etc/angie/http.d/` и подставь свой домен и `WEB_BASE_PATH`.
+Убедись, что в `/etc/angie/angie.conf` внутри блока `http {}` есть оба include:
+
+```nginx
+include /etc/angie/conf.d/*.conf;
+include /etc/angie/http.d/*.conf;
+```
+
+Скопируй:
+
+deploy/angie/download_filename_map.conf → /etc/angie/conf.d/download_filename_map.conf
+deploy/angie/00-acme.conf.example → /etc/angie/http.d/00-acme.conf
+deploy/angie/site.conf.example → /etc/angie/http.d/your-domain.conf
 
 Проверка и перезагрузка:
 
@@ -219,7 +251,24 @@ sudo systemctl reload angie
 
 ### 11. Получение и обновление сертификатов
 
-В примере конфига используется встроенный ACME Angie (`acme le;`). Для его работы домен должен уже смотреть на сервер, а порты `80` и `443` должны быть доступны снаружи.
+В примере конфига используется встроенный ACME Angie (`acme le;`).
+
+Для его работы необходимо:
+
+- чтобы домен уже смотрел на IP сервера;
+- чтобы входящий `80/tcp` был реально доступен извне;
+- чтобы в Angie были настроены:
+  - `resolver`,
+  - `acme_client le ...`,
+  - конфиг домена с `acme le;`.
+
+Если сертификат не выпускается, проверь:
+
+```bash
+sudo angie -t
+sudo systemctl status angie --no-pager
+sudo grep -RniE 'acme|challenge|certificate|letsencrypt' /var/log/angie/*.log
+```
 
 ### 12. Создание службы systemd
 
@@ -232,11 +281,59 @@ sudo systemctl status ytd_web --no-pager
 
 ### 13. Cron: автообновление `yt-dlp` и очистка `/download`
 
-Готовые строки:
+В проекте используется **не пользовательский `crontab -e`**, а отдельный системный cron-файл:
 
-```cron
-*/5 * * * * find /download -type f -mmin +30 -delete
-0 4 * * * before=$(/usr/bin/sudo -u botrunner -H bash -lc 'source /opt/telegram-bots/venv/bin/activate && python -c "import importlib.metadata as m; print(\"yt-dlp=\"+m.version(\"yt-dlp\") if \"yt-dlp\" in m.packages_distributions() else \"yt-dlp=NOT_INSTALLED\"); print(\"yt-dlp-ejs=\"+m.version(\"yt-dlp-ejs\") if \"yt-dlp-ejs\" in m.packages_distributions() else \"yt-dlp-ejs=NOT_INSTALLED\")"'); /usr/bin/sudo -u botrunner -H bash -lc 'source /opt/telegram-bots/venv/bin/activate && pip install -U --no-deps yt-dlp yt-dlp-ejs'; after=$(/usr/bin/sudo -u botrunner -H bash -lc 'source /opt/telegram-bots/venv/bin/activate && python -c "import importlib.metadata as m; print(\"yt-dlp=\"+m.version(\"yt-dlp\") if \"yt-dlp\" in m.packages_distributions() else \"yt-dlp=NOT_INSTALLED\"); print(\"yt-dlp-ejs=\"+m.version(\"yt-dlp-ejs\") if \"yt-dlp-ejs\" in m.packages_distributions() else \"yt-dlp-ejs=NOT_INSTALLED\")"'); [ "$before" != "$after" ] && /usr/bin/systemctl restart ytd_web || true
+```bash
+/etc/cron.d/ytd_web
+```
+
+Это значит:
+
+* crontab -l может быть пустым — это нормально;
+* задания нужно смотреть и редактировать в файле /etc/cron.d/ytd_web;
+* после расписания в таком файле обязательно указывается пользователь, от которого выполняется команда.
+
+**Посмотреть текущие задания:**
+
+```bash
+cat /etc/cron.d/ytd_web
+```
+
+**Отредактировать**
+
+```bash
+
+sudo nano /etc/cron.d/ytd_web
+
+```
+
+**Пример содержимого**
+
+```bash
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/5 * * * * root find /download -type f -mmin +30 -delete
+0 4 * * * root before=$(/usr/bin/sudo -u botrunner -H bash -lc 'source /opt/telegram-bots/venv/bin/activate && python -c "import importlib.metadata as m; print(\"yt-dlp=\"+m.version(\"yt-dlp\") if \"yt-dlp\" in m.packages_distributions() else \"yt-dlp=NOT_INSTALLED\"); print(\"yt-dlp-ejs=\"+m.version(\"yt-dlp-ejs\") if \"yt-dlp-ejs\" in m.packages_distributions() else \"yt-dlp-ejs=NOT_INSTALLED\")"'); /usr/bin/sudo -u botrunner -H bash -lc 'source /opt/telegram-bots/venv/bin/activate && pip install -U --no-deps yt-dlp yt-dlp-ejs'; after=$(/usr/bin/sudo -u botrunner -H bash -lc 'source /opt/telegram-bots/venv/bin/activate && python -c "import importlib.metadata as m; print(\"yt-dlp=\"+m.version(\"yt-dlp\") if \"yt-dlp\" in m.packages_distributions() else \"yt-dlp=NOT_INSTALLED\"); print(\"yt-dlp-ejs=\"+m.version(\"yt-dlp-ejs\") if \"yt-dlp-ejs\" in m.packages_distributions() else \"yt-dlp-ejs=NOT_INSTALLED\")"'); [ "$before" != "$after" ] && /usr/bin/systemctl restart ytd_web || true
+
+```
+
+**После редактирования можно перезапустить cron**
+
+```bash
+
+sudo systemctl restart cron
+sudo systemctl status cron --no-pager
+
+```
+
+**Проверить, что задания действительно выполняются**
+
+```bash
+
+grep CRON /var/log/syslog | tail -n 50
+
 ```
 
 ### 14. Проверка после установки
@@ -244,7 +341,8 @@ sudo systemctl status ytd_web --no-pager
 Проверь:
 
 ```bash
-curl -I http://127.0.0.1:8093
+source /opt/telegram-bots/ytd_web/.env
+curl -I "http://127.0.0.1:${WEB_PORT}${WEB_BASE_PATH}/"
 sudo systemctl status ytd_web --no-pager
 sudo systemctl status angie --no-pager
 sudo ufw status verbose
@@ -275,25 +373,6 @@ sudo bash scripts/ytd_db.sh vacuum-into
 
 ---
 
-## Как взять `REPO.git` в GitHub через веб‑интерфейс
-
-Ничего отдельно “создавать” не нужно. У каждого обычного GitHub‑репозитория уже есть clone URL.
-
-Делается так:
-
-1. Открой главную страницу репозитория на GitHub.
-2. Нажми кнопку **Code**.
-3. Выбери вкладку **HTTPS**.
-4. Скопируй адрес вида:
-
-```text
-https://github.com/USERNAME/REPO.git
-```
-
-Именно этот адрес и есть `REPO.git`, который нужен для `git clone` и для `GIT_REPO_URL` в `install.sh`.
-
----
-
 ## Структура проекта в репозитории
 
 ```text
@@ -314,7 +393,8 @@ web-ytd/
 │   │   └── ytd_web.service
 │   ├── angie/
 │   │   ├── site.conf.example
-│   │   └── download_filename_map.conf
+│   │   ├── download_filename_map.conf
+│   │   └── 00-acme.conf.example
 │   └── cron/
 │       └── crontab.example
 └── scripts/

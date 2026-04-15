@@ -6,10 +6,30 @@ APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${APP_DIR}/.env}"
 SERVICE_NAME="${SERVICE_NAME:-ytd_web}"
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "Не найден .env: ${ENV_FILE}" >&2
+if [[ -n "${ENV_FILE:-}" ]]; then
+  CANDIDATE_ENV="$ENV_FILE"
+elif [[ -f "${SCRIPT_DIR}/.env" ]]; then
+  CANDIDATE_ENV="${SCRIPT_DIR}/.env"
+elif [[ -f "${SCRIPT_DIR}/../.env" ]]; then
+  CANDIDATE_ENV="${SCRIPT_DIR}/../.env"
+else
+  echo "Не найден .env рядом со скриптом и уровнем выше:"
+  echo "  ${SCRIPT_DIR}/.env"
+  echo "  ${SCRIPT_DIR}/../.env"
   exit 1
 fi
+
+ENV_FILE="$(readlink -f "$CANDIDATE_ENV")"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Не найден .env: $ENV_FILE"
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
 
 # shellcheck disable=SC1090
 set -a
