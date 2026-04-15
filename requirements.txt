@@ -1,8 +1,0 @@
-aiogram
-fastapi
-jinja2
-python-dotenv
-python-multipart
-uvicorn[standard]
-yt-dlp
-yt-dlp-ejs
