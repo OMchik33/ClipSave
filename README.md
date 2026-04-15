@@ -56,8 +56,6 @@ sudo bash scripts/install.sh
 
 ### Вариант B — установка из GitHub/Git
 
-Если проект уже лежит в репозитории GitHub:
-
 ```bash
 unzip ytd_repo_bundle_v2.zip -d /root/web-ytd-installer
 cd /root/web-ytd-installer
