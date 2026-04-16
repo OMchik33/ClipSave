@@ -324,25 +324,19 @@ sudo ufw status verbose
 
 Скрипт `scripts/ytd_db.sh` умеет:
 
-```bash
-sudo bash scripts/ytd_db.sh status
-sudo bash scripts/ytd_db.sh backup
-sudo bash scripts/ytd_db.sh restore
-sudo bash scripts/ytd_db.sh restore 2
-sudo bash scripts/ytd_db.sh quick-check
-sudo bash scripts/ytd_db.sh integrity-check
-sudo bash scripts/ytd_db.sh vacuum-into
-```
+* status
+* backup
+* restore
+* quick-check
+* integrity-check
 
-Также можно сразу запустить `bash ytd_db.sh` без параметров и скрипт предложит меню выбора действий.
+
+Достаточно просто запустить `bash ytd_db.sh` и скрипт предложит меню выбора действий (на русском языке)
 
 
 Что важно:
 
 - перед любым restore скрипт сам создаёт аварийный backup текущей БД;
-- если запустить `restore` без аргумента, он покажет список найденных архивов и попросит ввести **номер** архива цифрой;
-- если запустить `restore 2`, он восстановит второй архив из списка;
-- в начале работы скрипт показывает свежую активность по БД и наличие недавних файлов в `/download`.
 
 ---
 
