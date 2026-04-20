@@ -128,6 +128,25 @@ PY
   fi
 }
 
+gen_alnum() {
+  local length="${1:-12}"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<PY
+import secrets
+import string
+alphabet = string.ascii_letters + string.digits
+print(''.join(secrets.choice(alphabet) for _ in range(${length})))
+PY
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "${length}"
+    printf '
+'
+  else
+    echo 'Не найден python3 или openssl для генерации WEB_BASE_PATH' >&2
+    return 1
+  fi
+}
+
 ensure_angie_http_include_conf_d() {
   python3 - <<'PY'
 from pathlib import Path
@@ -222,12 +241,12 @@ else
   exit 1
 fi
 
-DEFAULT_BASE_PATH="/$(gen_hex 12)"
+DEFAULT_BASE_PATH="/$(gen_alnum 12)"
 if [[ -z "${APP_DOMAIN}" ]]; then
   APP_DOMAIN="$(prompt_or_default 'Введите домен сервиса' 'example.com')"
 fi
 if [[ -z "${WEB_BASE_PATH_INPUT}" ]]; then
-  WEB_BASE_PATH_INPUT="$(prompt_or_default 'Введите скрытый WEB_BASE_PATH (без слеша в конце)' "${DEFAULT_BASE_PATH}")"
+  WEB_BASE_PATH_INPUT="${DEFAULT_BASE_PATH}"
 fi
 if [[ "${WEB_BASE_PATH_INPUT}" != /* ]]; then
   WEB_BASE_PATH_INPUT="/${WEB_BASE_PATH_INPUT}"
