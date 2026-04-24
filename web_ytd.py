@@ -1283,7 +1283,8 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
         "concurrent_fragment_downloads": 1,
         "continuedl": True,
         "force_ipv4": True,
-        "ignore_no_formats_error": True,
+        "merge_output_format": "mp4",
+        "ignore_no_formats_error": skip_download,
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) "
@@ -1311,21 +1312,55 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
 
 
 def get_format_string(mode: str, format_id: str | None, max_height: int = 0) -> str:
-    height_filter = f"[height<={max_height}]" if max_height and max_height > 0 else ""
-    if mode == "pick":
-        return f"{format_id}+bestaudio[ext=m4a]/best[ext=mp4]/best"
-    if mode == "safe":
-        return f"best[ext=mp4]{height_filter}/best{height_filter}/best"
-    if mode == "bestq":
-        return f"bestvideo{height_filter}[ext=mp4]+bestaudio[ext=m4a]/best{height_filter}[ext=mp4]/best{height_filter}/best"
-    if mode == "any":
-        return f"best{height_filter}/best"
-    return f"best{height_filter}/best"
+    """
+    Build yt-dlp format selector.
+
+    For horizontal videos:
+      720p  -> 1280x720
+      1080p -> 1920x1080
+
+    For vertical videos and YouTube Shorts:
+      720p  -> 720x1280
+      1080p -> 1080x1920
+
+    The limit is applied to the largest frame side, so vertical Shorts
+    are not rejected by a simple height<=720 filter.
+    """
+    if max_height and max_height > 0:
+        max_side = int(max_height) * 2
+        video_filter = f"[width<={max_side}][height<={max_side}]"
+    else:
+        video_filter = ""
+
+    if mode == "pick" and format_id:
+        return f"{format_id}+ba/{format_id}/b"
+
+    if video_filter:
+        return f"bv*{video_filter}+ba/b{video_filter}/bv*+ba/b"
+
+    return "bv*+ba/b"
 
 
 def ydl_extract(url: str, opts: dict[str, Any], *, download: bool):
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=download)
+
+
+def human_download_error(exc: Exception) -> str:
+    raw = str(exc)
+    lower = raw.lower()
+
+    if "no video formats found" in lower or "requested format is not available" in lower:
+        return (
+            "Не удалось найти подходящий видеоформат. Попробуй выбрать другое качество "
+            "или загрузить cookies.txt для YouTube в формате Netscape. Если ссылка публичная, "
+            "обнови yt-dlp и yt-dlp-ejs через скрипт установки/обновления."
+        )
+
+    if "file is larger than max-filesize" in lower or "larger than max-filesize" in lower:
+        return "Файл больше лимита, заданного администратором. Выбери качество ниже."
+
+    return raw
 
 
 def find_downloaded_file(info: dict[str, Any]) -> str | None:
@@ -1696,22 +1731,85 @@ def sync_download_media(
             raise RuntimeError("Не передан format_id.")
         opts["format"] = get_format_string(mode, format_id, max_height=max_height)
 
-    logger.info("Downloading url=%s mode=%s format=%s", url, mode, opts.get("format"))
+    cookiefile = opts.get("cookiefile")
+    logger.info(
+        "Downloading url=%s mode=%s format=%s cookies=%s",
+        url,
+        mode,
+        opts.get("format"),
+        Path(str(cookiefile)).name if cookiefile else "no",
+    )
+
+    def is_format_or_cookie_related_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "requested format is not available",
+            "no video formats found",
+            "only images are available",
+            "video formats found",
+            "n challenge solving failed",
+        )
+        return any(marker in text for marker in markers)
+
+    def make_no_cookie_opts(source_opts: dict[str, Any]) -> dict[str, Any]:
+        new_opts = dict(source_opts)
+        new_opts.pop("cookiefile", None)
+        return new_opts
 
     try:
         info = ydl_extract(url, opts, download=True)
     except Exception as e1:
-        logger.warning("Primary download failed, retry with ffmpeg downloader. err=%s", e1)
-        schedule_task_update(
-            loop,
-            task_id,
-            status="processing",
-            status_label="Повторная попытка",
-            detail="Переключаюсь на ffmpeg downloader",
-        )
-        opts_ff = dict(opts)
-        opts_ff["downloader"] = "ffmpeg"
-        info = ydl_extract(url, opts_ff, download=True)
+        logger.warning("Primary download failed. err=%s", e1)
+
+        if "cookiefile" in opts and is_format_or_cookie_related_error(e1):
+            logger.warning("Download failed with cookies, retry without cookies. err=%s", e1)
+            schedule_task_update(
+                loop,
+                task_id,
+                status="processing",
+                status_label="Повторная попытка",
+                detail="Cookies не подошли для этого видео, пробую скачать без cookies",
+            )
+
+            opts_no_cookie = make_no_cookie_opts(opts)
+            try:
+                info = ydl_extract(url, opts_no_cookie, download=True)
+            except Exception as e_no_cookie_1:
+                logger.warning("No-cookie download failed, retry with ffmpeg downloader. err=%s", e_no_cookie_1)
+                schedule_task_update(
+                    loop,
+                    task_id,
+                    status="processing",
+                    status_label="Повторная попытка",
+                    detail="Пробую резервный способ скачивания без cookies",
+                )
+
+                opts_no_cookie_ff = make_no_cookie_opts(opts)
+                opts_no_cookie_ff["downloader"] = "ffmpeg"
+
+                try:
+                    info = ydl_extract(url, opts_no_cookie_ff, download=True)
+                except Exception as e_no_cookie_2:
+                    logger.warning("No-cookie fallback download failed. err=%s", e_no_cookie_2)
+                    raise RuntimeError(human_download_error(e_no_cookie_2)) from e_no_cookie_2
+        else:
+            logger.warning("Primary download failed, retry with ffmpeg downloader. err=%s", e1)
+            schedule_task_update(
+                loop,
+                task_id,
+                status="processing",
+                status_label="Повторная попытка",
+                detail="Пробую резервный способ скачивания",
+            )
+
+            opts_ff = dict(opts)
+            opts_ff["downloader"] = "ffmpeg"
+
+            try:
+                info = ydl_extract(url, opts_ff, download=True)
+            except Exception as e2:
+                logger.warning("Fallback download failed. err=%s", e2)
+                raise RuntimeError(human_download_error(e2)) from e2
 
     path = find_downloaded_file(info)
     if not path or not os.path.exists(path):
