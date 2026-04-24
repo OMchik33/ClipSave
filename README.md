@@ -17,6 +17,21 @@ ClipSave — веб-сервис на FastAPI для скачивания вид
 - Прямой `/files/` в Angie закрывается, файлы отдаются через внутренние `X-Accel-Redirect`-пути.
 - Добавлена подсказка по cookies.txt в формате Netscape и расширению Get cookies.txt LOCALLY.
 
+---
+
+## Быстрый старт - установка из GitHub/Git
+
+```
+sudo apt update
+sudo apt install -y git
+git clone https://github.com/OMchik33/Web_YTD.git /root/web-ytd-src
+cd /root/web-ytd-src
+sudo bash scripts/install.sh
+```
+В этом варианте скрипт разворачивает сервис из уже клонированного репозитория.
+
+---
+
 ## Базовая логика работы
 
 Пользователь открывает свою ссылку доступа, вставляет ссылку на видео, запускает анализ и выбирает качество до скачивания. Это позволяет не создавать лишние копии одного видео на сервере.
