@@ -1364,3 +1364,22 @@ body[data-theme="light"] .progress-bar.is-active {
     gap: 16px;
   }
 }
+
+.proxy-result {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card-soft);
+}
+
+.proxy-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.proxy-result-actions .small-btn {
+  text-align: center;
+}

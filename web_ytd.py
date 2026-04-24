@@ -14,12 +14,15 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse, urlunparse
+import urllib.error
+import urllib.request
 from decimal import Decimal, InvalidOperation
 
+import httpx
 import yt_dlp
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
@@ -105,6 +108,8 @@ task_queue: asyncio.Queue[str] = asyncio.Queue()
 queued_task_ids: list[str] = []
 worker_tasks: list[asyncio.Task] = []
 active_tasks: dict[str, dict[str, Any]] = {}
+proxy_stream_tokens: dict[str, dict[str, Any]] = {}
+proxy_stream_lock = asyncio.Lock()
 
 
 SCHEMA_SQL = """
@@ -2749,6 +2754,155 @@ async def media_watch(request: Request, token: str):
     return Response(status_code=200, headers=headers)
 
 
+
+def _proxy_quality_side_limit(height: int | None) -> int:
+    if not height or height <= 0:
+        return 0
+    return int(height) * 2
+
+
+def _proxy_format_short_side(fmt: dict[str, Any]) -> int:
+    width = int(fmt.get("width") or 0)
+    height = int(fmt.get("height") or 0)
+    if width and height:
+        return min(width, height)
+    return height or width or 0
+
+
+def _proxy_format_long_side(fmt: dict[str, Any]) -> int:
+    width = int(fmt.get("width") or 0)
+    height = int(fmt.get("height") or 0)
+    return max(width, height)
+
+
+def _proxy_video_codec_priority(fmt: dict[str, Any]) -> int:
+    codec = str(fmt.get("vcodec") or "").lower()
+    ext = str(fmt.get("ext") or "").lower()
+    if ext == "mp4" and (codec.startswith("avc") or codec.startswith("h264")):
+        return 5
+    if ext == "mp4" and codec.startswith("hev"):
+        return 4
+    if ext == "mp4" and codec.startswith("av01"):
+        return 3
+    if ext == "webm" and codec.startswith("vp9"):
+        return 2
+    if ext == "webm":
+        return 1
+    return 0
+
+
+def _proxy_audio_codec_priority(fmt: dict[str, Any]) -> int:
+    ext = str(fmt.get("ext") or "").lower()
+    codec = str(fmt.get("acodec") or "").lower()
+    if ext == "m4a" or codec.startswith("mp4a"):
+        return 4
+    if ext == "webm" and codec.startswith("opus"):
+        return 3
+    if ext == "mp3":
+        return 2
+    return 0
+
+
+def _proxy_size(fmt: dict[str, Any]) -> int:
+    return int(fmt.get("filesize") or fmt.get("filesize_approx") or 0)
+
+
+def _proxy_format_headers(info: dict[str, Any], fmt: dict[str, Any]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for source in (info.get("http_headers") or {}, fmt.get("http_headers") or {}):
+        if isinstance(source, dict):
+            for key, value in source.items():
+                if value is not None:
+                    headers[str(key)] = str(value)
+    if "User-Agent" not in headers:
+        headers["User-Agent"] = (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
+    return headers
+
+
+def _proxy_pick_formats(info: dict[str, Any], requested_height: int | None, max_file_bytes: int | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    formats = info.get("formats") or []
+    side_limit = _proxy_quality_side_limit(requested_height)
+
+    video_candidates: list[dict[str, Any]] = []
+    audio_candidates: list[dict[str, Any]] = []
+
+    for fmt in formats:
+        fmt_url = fmt.get("url")
+        fmt_id = fmt.get("format_id")
+        ext = str(fmt.get("ext") or "").lower()
+        vcodec = fmt.get("vcodec")
+        acodec = fmt.get("acodec")
+
+        if not fmt_url or not fmt_id:
+            continue
+        if ext == "mhtml" or "storyboard" in str(fmt_id).lower():
+            continue
+
+        size = _proxy_size(fmt)
+        if max_file_bytes and size and size > max_file_bytes:
+            continue
+
+        has_video = bool(vcodec and vcodec != "none")
+        has_audio = bool(acodec and acodec != "none")
+
+        if has_video and not has_audio:
+            if side_limit:
+                width = int(fmt.get("width") or 0)
+                height = int(fmt.get("height") or 0)
+                if (width and width > side_limit) or (height and height > side_limit):
+                    continue
+            video_candidates.append(fmt)
+        elif has_audio and not has_video:
+            audio_candidates.append(fmt)
+
+    if not video_candidates:
+        raise RuntimeError("Не удалось найти отдельную видеодорожку для прокси-скачивания. Используй обычное скачивание.")
+    if not audio_candidates:
+        raise RuntimeError("Не удалось найти отдельную аудиодорожку для прокси-скачивания. Используй обычное скачивание.")
+
+    video_candidates.sort(
+        key=lambda item: (
+            _proxy_format_short_side(item),
+            _proxy_video_codec_priority(item),
+            int(item.get("fps") or 0),
+            int(item.get("tbr") or 0),
+            _proxy_size(item),
+        ),
+        reverse=True,
+    )
+    audio_candidates.sort(
+        key=lambda item: (
+            _proxy_audio_codec_priority(item),
+            int(item.get("abr") or item.get("tbr") or 0),
+            _proxy_size(item),
+        ),
+        reverse=True,
+    )
+
+    return video_candidates[0], audio_candidates[0]
+
+
+def _proxy_filename(title: str, kind: str, fmt: dict[str, Any]) -> str:
+    safe_title = re.sub(r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", title).strip(" ._")[:80]
+    if not safe_title:
+        safe_title = "clipsave"
+    ext = str(fmt.get("ext") or ("m4a" if kind == "audio" else "mp4")).lower()
+    suffix = "audio" if kind == "audio" else "video"
+    return f"{safe_title}_{suffix}_{fmt.get('format_id')}.{ext}"
+
+
+async def _proxy_cleanup_expired_tokens() -> None:
+    now = now_utc()
+    async with proxy_stream_lock:
+        expired = [token for token, item in proxy_stream_tokens.items() if item.get("expires_at") <= now]
+        for token in expired:
+            proxy_stream_tokens.pop(token, None)
+
+
 @web.post("/api/proxy-download")
 async def api_proxy_download(
     request: Request,
@@ -2759,56 +2913,180 @@ async def api_proxy_download(
     user_id = await get_current_user_id(request)
     settings = await get_settings()
     if not setting_bool(settings, "experimental_proxy_download_enabled"):
-        raise HTTPException(status_code=403, detail="Экспериментальный режим отключён администратором.")
+        raise HTTPException(status_code=403, detail="Прокси-скачивание отключено администратором.")
 
     url = url.strip()
     if not re.match(r"https?://\S+", url):
         raise HTTPException(status_code=400, detail="Нужна корректная ссылка http/https.")
 
-    await enforce_storage_limits(settings)
     await mark_user_seen(user_id, touch_activity=True)
+    await _proxy_cleanup_expired_tokens()
 
-    task_id = "proxy_" + secrets.token_hex(8)
-    opts = build_base_ydl_opts(user_id, skip_download=False, quiet=False, task_id=task_id)
-    opts["max_filesize"] = setting_gb_to_bytes(settings, "experimental_proxy_max_file_gb", Decimal("2"))
     max_height = quality_height or setting_int(settings, "default_user_quality", 1080)
     if setting_bool(settings, "allow_unlimited_quality"):
         max_height = quality_height or 0
-    opts["format"] = get_format_string(mode if mode in {"safe", "bestq", "any"} else "safe", None, max_height=max_height)
 
-    def _download_proxy() -> Path:
-        info = ydl_extract(clean_youtube_url(url), opts, download=True)
-        path_str = find_downloaded_file(info)
-        if not path_str:
-            raise RuntimeError("Файл не найден после скачивания.")
-        return Path(path_str)
+    opts = build_base_ydl_opts(user_id, skip_download=True, quiet=True)
+    opts["format"] = "bv*+ba/b"
+
+    max_file_bytes = None
+    if not setting_bool(settings, "allow_unlimited_file_size"):
+        max_file_bytes = setting_gb_to_bytes(settings, "experimental_proxy_max_file_gb", Decimal("2"))
 
     try:
-        path = await asyncio.wait_for(asyncio.to_thread(_download_proxy), timeout=setting_int(settings, "experimental_proxy_max_duration_minutes", 30) * 60)
-    except asyncio.TimeoutError as exc:
-        await cleanup_temp_files(task_id)
-        raise HTTPException(status_code=504, detail="Экспериментальная загрузка превысила лимит времени.") from exc
+        info = await asyncio.to_thread(ydl_extract, clean_youtube_url(url), opts, download=False)
+        video_fmt, audio_fmt = _proxy_pick_formats(info, max_height, max_file_bytes)
     except Exception as exc:
-        await cleanup_temp_files(task_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.warning("Proxy prepare failed. err=%s", exc)
+        raise HTTPException(status_code=500, detail=human_download_error(exc)) from exc
 
-    filename = path.name
-    def _cleanup_proxy_files() -> None:
-        for temp_path in DOWNLOAD_PATH.glob(f"*{task_id}*"):
-            try:
-                if temp_path.is_file():
-                    temp_path.unlink(missing_ok=True)
-            except Exception:
-                logger.exception("Failed to delete proxy temp file %s", temp_path)
+    title = info.get("title") or "video"
+    ttl_minutes = setting_int(settings, "experimental_proxy_max_duration_minutes", 30)
+    expires_at = now_utc() + dt.timedelta(minutes=max(1, ttl_minutes))
 
-    return FileResponse(
-        path,
-        media_type=guess_mime_type(path),
-        filename=filename,
-        background=BackgroundTask(_cleanup_proxy_files),
+    video_token = secrets.token_urlsafe(32)
+    audio_token = secrets.token_urlsafe(32)
+
+    common_info = {
+        "created_by_user_id": user_id,
+        "source_url": clean_youtube_url(url),
+        "title": title,
+        "expires_at": expires_at,
+    }
+
+    async with proxy_stream_lock:
+        proxy_stream_tokens[video_token] = {
+            **common_info,
+            "kind": "video",
+            "url": video_fmt["url"],
+            "headers": _proxy_format_headers(info, video_fmt),
+            "filename": _proxy_filename(title, "video", video_fmt),
+            "media_type": video_fmt.get("acodec") != "none" and "video/mp4" or f"video/{video_fmt.get('ext') or 'mp4'}",
+            "format_id": video_fmt.get("format_id"),
+            "size": _proxy_size(video_fmt),
+            "label": f"Видео {video_fmt.get('format_id')} · {video_fmt.get('width') or '?'}x{video_fmt.get('height') or '?'} · {video_fmt.get('ext') or ''}",
+        }
+        proxy_stream_tokens[audio_token] = {
+            **common_info,
+            "kind": "audio",
+            "url": audio_fmt["url"],
+            "headers": _proxy_format_headers(info, audio_fmt),
+            "filename": _proxy_filename(title, "audio", audio_fmt),
+            "media_type": "audio/mp4" if str(audio_fmt.get("ext") or "").lower() == "m4a" else f"audio/{audio_fmt.get('ext') or 'mpeg'}",
+            "format_id": audio_fmt.get("format_id"),
+            "size": _proxy_size(audio_fmt),
+            "label": f"Аудио {audio_fmt.get('format_id')} · {audio_fmt.get('ext') or ''} · {audio_fmt.get('abr') or audio_fmt.get('tbr') or '?'} kbps",
+        }
+
+    return {
+        "ok": True,
+        "expires_at": iso(expires_at),
+        "expires_in_minutes": max(1, ttl_minutes),
+        "video": {
+            "url": f"{WEB_BASE_PATH}/proxy/video/{video_token}",
+            "filename": proxy_stream_tokens[video_token]["filename"],
+            "label": proxy_stream_tokens[video_token]["label"],
+            "size_text": fmt_size(proxy_stream_tokens[video_token]["size"]),
+        },
+        "audio": {
+            "url": f"{WEB_BASE_PATH}/proxy/audio/{audio_token}",
+            "filename": proxy_stream_tokens[audio_token]["filename"],
+            "label": proxy_stream_tokens[audio_token]["label"],
+            "size_text": fmt_size(proxy_stream_tokens[audio_token]["size"]),
+        },
+    }
+
+
+@web.get("/proxy/{kind}/{token}")
+async def proxy_stream_download(request: Request, kind: str, token: str):
+    if kind not in {"video", "audio"}:
+        raise HTTPException(status_code=404, detail="Прокси-ссылка не найдена.")
+
+    await _proxy_cleanup_expired_tokens()
+    async with proxy_stream_lock:
+        item = proxy_stream_tokens.get(token)
+
+    if not item or item.get("kind") != kind:
+        raise HTTPException(status_code=404, detail="Прокси-ссылка не найдена или устарела.")
+    if item.get("expires_at") <= now_utc():
+        async with proxy_stream_lock:
+            proxy_stream_tokens.pop(token, None)
+        raise HTTPException(status_code=404, detail="Прокси-ссылка устарела. Нажми «Прокси-скачивание» ещё раз.")
+
+    upstream_headers = dict(item.get("headers") or {})
+    range_header = request.headers.get("range")
+    if range_header:
+        upstream_headers["Range"] = range_header
+
+    timeout = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    client = httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True)
+
+    try:
+        upstream = await client.send(
+            client.build_request("GET", item["url"], headers=upstream_headers),
+            stream=True,
+        )
+        upstream.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response else 502
+        await client.aclose()
+        logger.warning("Proxy upstream HTTP error: status=%s token=%s", status_code, token)
+        raise HTTPException(status_code=502, detail=f"Источник вернул ошибку HTTP {status_code}. Создай прокси-ссылку заново.") from exc
+    except Exception as exc:
+        await client.aclose()
+        logger.warning("Proxy upstream open failed. err=%s", exc)
+        raise HTTPException(status_code=502, detail="Не удалось открыть поток источника. Создай прокси-ссылку заново.") from exc
+
+    async def iterator():
+        started_at = time.monotonic()
+        sent_bytes = 0
+        try:
+            async for chunk in upstream.aiter_bytes(chunk_size=4 * 1024 * 1024):
+                if await request.is_disconnected():
+                    logger.info("Proxy stream client disconnected: kind=%s token=%s bytes=%s", kind, token, sent_bytes)
+                    break
+                sent_bytes += len(chunk)
+                yield chunk
+        finally:
+            duration = max(0.001, time.monotonic() - started_at)
+            avg_speed = sent_bytes / duration
+            logger.info(
+                "Proxy stream finished: kind=%s token=%s bytes=%s duration=%.2fs avg=%s/s",
+                kind,
+                token,
+                sent_bytes,
+                duration,
+                fmt_size(avg_speed),
+            )
+            await upstream.aclose()
+            await client.aclose()
+
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(item['filename'])}",
+        "Cache-Control": "no-store",
+        "Accept-Ranges": upstream.headers.get("Accept-Ranges", "bytes"),
+    }
+    for header in ("Content-Length", "Content-Range"):
+        value = upstream.headers.get(header)
+        if value:
+            headers[header] = value
+
+    logger.info(
+        "Proxy stream started: kind=%s token=%s status=%s length=%s range=%s",
+        kind,
+        token,
+        upstream.status_code,
+        headers.get("Content-Length", "unknown"),
+        range_header or "no",
     )
 
-
+    return StreamingResponse(
+        iterator(),
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("Content-Type") or item.get("media_type") or "application/octet-stream",
+        headers=headers,
+    )
 @web.post("/api/cleanup")
 async def api_cleanup(request: Request):
     await get_current_user_id(request)

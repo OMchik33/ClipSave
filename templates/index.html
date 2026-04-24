@@ -90,12 +90,21 @@
             <div class="download-actions">
               <button class="secondary-btn action-btn" type="button" data-mode="bestq">Скачать видео</button>
               <button class="secondary-btn action-btn" type="button" data-mode="audio">MP3</button>
-              <button id="proxy-download-btn" class="secondary-btn action-btn hidden" type="button">Экспериментально без хранения</button>
+              <button id="proxy-download-btn" class="secondary-btn action-btn hidden" type="button">Прокси-скачивание</button>
               <button id="thumbnail-btn" class="secondary-btn action-btn hidden" type="button">Обложка</button>
             </div>
 
             <div id="proxy-help" class="muted helper-text proxy-help hidden">
-              "Экспериментально без хранения" - режим, когда файл не сохраняется на сервере, а сразу скачивается на твой компьютер. <br> Экспериментальный режим подходит не для всех сайтов. Иногда видео и звук могут скачаться двумя отдельными файлами: один файл содержит изображение, второй — звук. Если так произошло, склей их в программе видеомонтажа или используй обычный режим скачивания — сервис сам объединит видео и звук в один файл.
+              Прокси-скачивание не сохраняет файл на сервере. Сервис подготовит две короткоживущие ссылки: отдельно на видеодорожку и отдельно на аудиодорожку. Скачай оба файла на компьютер и склей их в программе видеомонтажа или через FFmpeg. Если нужен один готовый MP4, используй обычное скачивание.
+            </div>
+
+            <div id="proxy-result" class="proxy-result hidden">
+              <div class="section-title">Прокси-ссылки готовы</div>
+              <p id="proxy-result-meta" class="muted helper-text helper-text-compact"></p>
+              <div class="proxy-result-actions">
+                <a id="proxy-video-link" class="primary-btn small-btn" href="#" target="_blank" rel="noopener">Скачать видеодорожку</a>
+                <a id="proxy-audio-link" class="secondary-btn small-btn" href="#" target="_blank" rel="noopener">Скачать аудиодорожку</a>
+              </div>
             </div>
 
             <div>
@@ -418,10 +427,10 @@
               <label class="check-row"><input name="allow_unlimited_file_size" id="setting-unlimited-file" type="checkbox"> Не ограничивать размер одного файла</label>
               <label class="check-row"><input name="allow_unlimited_download_dir" id="setting-unlimited-dir" type="checkbox"> Не ограничивать квоту каталога</label>
               <label class="check-row"><input name="allow_unlimited_quality" id="setting-unlimited-quality" type="checkbox"> Не ограничивать качество</label>
-              <label class="check-row"><input name="experimental_proxy_download_enabled" id="setting-proxy-enabled" type="checkbox"> Включить экспериментальное скачивание без хранения</label>
+              <label class="check-row"><input name="experimental_proxy_download_enabled" id="setting-proxy-enabled" type="checkbox"> Включить прокси-скачивание</label>
 
-              <label>Эксп. лимит файла, ГБ <input name="experimental_proxy_max_file_gb" id="setting-proxy-max-gb" class="text-input" type="text" inputmode="decimal"></label>
-              <label>Эксп. лимит времени, минут <input name="experimental_proxy_max_duration_minutes" id="setting-proxy-minutes" class="text-input" type="number" min="1"></label>
+              <label>Прокси лимит файла, ГБ <input name="experimental_proxy_max_file_gb" id="setting-proxy-max-gb" class="text-input" type="text" inputmode="decimal"></label>
+              <label>Прокси ссылки живут, минут <input name="experimental_proxy_max_duration_minutes" id="setting-proxy-minutes" class="text-input" type="number" min="1"></label>
 
               <div class="settings-actions">
                 <button class="primary-btn" type="submit">Сохранить настройки</button>

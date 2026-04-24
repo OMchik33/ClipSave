@@ -15,6 +15,10 @@ const thumbnailBtn = document.getElementById('thumbnail-btn');
 const qualitySelect = document.getElementById('quality-select');
 const proxyDownloadBtn = document.getElementById('proxy-download-btn');
 const proxyHelp = document.getElementById('proxy-help');
+const proxyResult = document.getElementById('proxy-result');
+const proxyVideoLink = document.getElementById('proxy-video-link');
+const proxyAudioLink = document.getElementById('proxy-audio-link');
+const proxyResultMeta = document.getElementById('proxy-result-meta');
 
 const cookiesForm = document.getElementById('cookies-form');
 const cookiesStatus = document.getElementById('cookies-status');
@@ -384,6 +388,9 @@ function renderAnalysis(data) {
   if (proxyHelp) {
     proxyHelp.classList.toggle('hidden', !(data.settings && data.settings.experimental_proxy_download_enabled));
   }
+  if (proxyResult) {
+    proxyResult.classList.add('hidden');
+  }
 
   if (thumbnailBtn) {
     if (data.thumbnail_url) {
@@ -541,6 +548,11 @@ async function startProxyDownload() {
     showToast('Сначала выполни анализ ссылки.', 'error');
     return;
   }
+
+  if (proxyResult) {
+    proxyResult.classList.add('hidden');
+  }
+
   const form = new FormData();
   form.append('url', currentAnalysis.url);
   form.append('mode', 'safe');
@@ -550,36 +562,43 @@ async function startProxyDownload() {
   }
 
   try {
-    setButtonLoading(proxyDownloadBtn, true, 'Экспериментально без хранения', 'Готовлю файл...');
-    const response = await fetch(apiUrl('/api/proxy-download'), {
+    setButtonLoading(proxyDownloadBtn, true, 'Прокси-скачивание', 'Готовлю ссылки...');
+    const data = await fetchJson(apiUrl('/api/proxy-download'), {
       method: 'POST',
       body: form,
     });
-    if (!response.ok) {
-      let message = `Ошибка запроса (${response.status})`;
-      try {
-        const data = await response.json();
-        message = data.detail || message;
-      } catch {}
-      throw new Error(message);
+
+    if (proxyVideoLink && data.video && data.video.url) {
+      proxyVideoLink.href = data.video.url;
+      proxyVideoLink.download = data.video.filename || '';
+      proxyVideoLink.textContent = data.video.size_text
+        ? `Скачать видеодорожку (${data.video.size_text})`
+        : 'Скачать видеодорожку';
     }
-    const blob = await response.blob();
-    const disposition = response.headers.get('content-disposition') || '';
-    const filenameMatch = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
-    const filename = filenameMatch ? decodeURIComponent(filenameMatch[1].replaceAll('"', '').trim()) : 'clipsave-proxy-download';
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
-    showToast('Экспериментальная загрузка завершена.', 'success');
+
+    if (proxyAudioLink && data.audio && data.audio.url) {
+      proxyAudioLink.href = data.audio.url;
+      proxyAudioLink.download = data.audio.filename || '';
+      proxyAudioLink.textContent = data.audio.size_text
+        ? `Скачать аудиодорожку (${data.audio.size_text})`
+        : 'Скачать аудиодорожку';
+    }
+
+    if (proxyResultMeta) {
+      const videoLabel = data.video && data.video.label ? data.video.label : 'видеодорожка';
+      const audioLabel = data.audio && data.audio.label ? data.audio.label : 'аудиодорожка';
+      const ttl = data.expires_in_minutes || 15;
+      proxyResultMeta.textContent = `${videoLabel} · ${audioLabel}. Ссылки действуют ${ttl} мин.`;
+    }
+
+    if (proxyResult) {
+      proxyResult.classList.remove('hidden');
+    }
+    showToast('Прокси-ссылки подготовлены.', 'success');
   } catch (err) {
     showToast(err.message, 'error', 6000);
   } finally {
-    setButtonLoading(proxyDownloadBtn, false, 'Экспериментально без хранения', 'Готовлю файл...');
+    setButtonLoading(proxyDownloadBtn, false, 'Прокси-скачивание', 'Готовлю ссылки...');
   }
 }
 
