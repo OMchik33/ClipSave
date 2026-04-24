@@ -1596,14 +1596,14 @@ async def start_download_task(
     if await count_user_active_tasks(user_id) >= MAX_ACTIVE_TASKS_PER_USER:
         raise HTTPException(status_code=429, detail="У вас уже есть активная задача. Дождитесь завершения.")
 
+    settings = await get_settings()
+    await enforce_storage_limits(settings)
+
     task = init_task(user_id, url)
     task["mode"] = mode
     task["title"] = title_hint
     task["format_id"] = format_id
     task["requested_height"] = requested_height
-
-    settings = await get_settings()
-    await enforce_storage_limits(settings)
 
     position = await add_to_queue(task["task_id"])
     await update_task(
