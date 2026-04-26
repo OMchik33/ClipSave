@@ -42,6 +42,7 @@ const taskDownloadLink = document.getElementById('task-download-link');
 const taskWatchLink = document.getElementById('task-watch-link');
 const taskError = document.getElementById('task-error');
 const taskProgress = document.getElementById('task-progress');
+const taskCancelBtn = document.getElementById('task-cancel-btn');
 
 const inviteCreateForm = document.getElementById('invite-create-form');
 const inviteCreateBtn = document.getElementById('invite-create-btn');
@@ -438,6 +439,11 @@ function updateTaskUi(task) {
     setTaskProgressState('done');
     taskResult.classList.remove('hidden');
     taskError.classList.add('hidden');
+    if (taskCancelBtn) {
+      taskCancelBtn.classList.add('hidden');
+      taskCancelBtn.disabled = false;
+      taskCancelBtn.textContent = 'Отмена';
+    }
     taskDownloadLink.href = task.download_url;
     if (taskWatchLink) {
       taskWatchLink.href = task.watch_url || task.download_url;
@@ -455,16 +461,61 @@ function updateTaskUi(task) {
     taskResult.classList.add('hidden');
     taskError.classList.remove('hidden');
     taskError.textContent = task.error || task.detail || 'Неизвестная ошибка';
+    if (taskCancelBtn) {
+      taskCancelBtn.classList.add('hidden');
+      taskCancelBtn.disabled = false;
+      taskCancelBtn.textContent = 'Отмена';
+    }
 
     if (!errorNotifiedTaskIds.has(notifyKey)) {
       errorNotifiedTaskIds.add(notifyKey);
       showToast(`Ошибка: ${task.error || task.detail || 'неизвестная ошибка'}`, 'error', 5500);
+    }
+  } else if (task.status === 'cancelled') {
+    setTaskBadgeState('error');
+    setTaskProgressState('error');
+    taskResult.classList.add('hidden');
+    taskError.classList.remove('hidden');
+    taskError.textContent = task.error || task.detail || 'Скачивание отменено.';
+    if (taskCancelBtn) {
+      taskCancelBtn.classList.add('hidden');
+      taskCancelBtn.disabled = false;
+      taskCancelBtn.textContent = 'Отмена';
     }
   } else {
     setTaskBadgeState('active');
     setTaskProgressState('active');
     taskResult.classList.add('hidden');
     taskError.classList.add('hidden');
+    if (taskCancelBtn) {
+      taskCancelBtn.classList.remove('hidden');
+      taskCancelBtn.disabled = task.status === 'cancelling' || Boolean(task.cancel_requested);
+      taskCancelBtn.textContent = taskCancelBtn.disabled ? 'Отменяю...' : 'Отмена';
+    }
+  }
+}
+
+async function cancelCurrentTask() {
+  if (!currentTaskId) {
+    return;
+  }
+
+  try {
+    if (taskCancelBtn) {
+      taskCancelBtn.disabled = true;
+      taskCancelBtn.textContent = 'Отменяю...';
+    }
+    const data = await fetchJson(apiUrl(`/api/task/${currentTaskId}/cancel`), { method: 'POST' });
+    if (data.task) {
+      updateTaskUi(data.task);
+    }
+    showToast('Отмена запрошена.', 'info');
+  } catch (err) {
+    if (taskCancelBtn) {
+      taskCancelBtn.disabled = false;
+      taskCancelBtn.textContent = 'Отмена';
+    }
+    showToast(err.message, 'error');
   }
 }
 
@@ -524,6 +575,11 @@ async function startDownload(mode, formatId = null) {
     taskDetail.textContent = data.detail || 'Задача создана, ожидаю выполнение';
     taskResult.classList.add('hidden');
     taskError.classList.add('hidden');
+    if (taskCancelBtn) {
+      taskCancelBtn.classList.remove('hidden');
+      taskCancelBtn.disabled = false;
+      taskCancelBtn.textContent = 'Отмена';
+    }
 
     completedNotifiedTaskIds.delete(currentTaskId);
     errorNotifiedTaskIds.delete(currentTaskId);
@@ -737,7 +793,28 @@ function renderActiveTasks(tasks) {
       <div class="mini-task-title">${escapeHtml(task.title || 'Видео')}</div>
       <div class="mini-task-detail muted">${escapeHtml(task.detail || '')}</div>
       <div class="mini-task-meta muted">Обновлено: ${escapeHtml(formatDateToLocal(task.updated_at))}</div>
+      <div class="mini-task-actions">
+        <button class="ghost-btn small-btn danger-btn admin-task-cancel-btn" type="button" ${task.cancel_requested ? 'disabled' : ''}>
+          ${task.cancel_requested ? 'Отменяю...' : 'Отмена'}
+        </button>
+      </div>
     `;
+
+    item.querySelector('.admin-task-cancel-btn')?.addEventListener('click', async () => {
+      if (!window.confirm('Отменить это скачивание?')) {
+        return;
+      }
+      try {
+        const data = await fetchJson(apiUrl(`/api/admin/tasks/${task.task_id}/cancel`), { method: 'POST' });
+        if (data.overview) {
+          applyAdminOverview(data.overview);
+        }
+        showToast('Отмена скачивания запрошена.', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
     adminActiveTasks.appendChild(item);
   });
 }
@@ -1131,6 +1208,8 @@ adminCleanupAllFilesBtn?.addEventListener('click', async () => {
     showToast(err.message, 'error');
   }
 });
+
+taskCancelBtn?.addEventListener('click', cancelCurrentTask);
 
 themeToggleBtn?.addEventListener('click', toggleTheme);
 

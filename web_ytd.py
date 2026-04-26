@@ -112,6 +112,10 @@ proxy_stream_tokens: dict[str, dict[str, Any]] = {}
 proxy_stream_lock = asyncio.Lock()
 
 
+class DownloadCancelledError(RuntimeError):
+    pass
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
   user_id TEXT PRIMARY KEY,
@@ -1565,6 +1569,53 @@ def schedule_task_update(loop: asyncio.AbstractEventLoop, task_id: str, **kwargs
     loop.call_soon_threadsafe(runner)
 
 
+def ensure_task_not_cancelled(task_id: str) -> None:
+    task = active_tasks.get(task_id)
+    if task and task.get("cancel_requested"):
+        raise DownloadCancelledError("Скачивание отменено.")
+
+
+async def cancel_download_task(task_id: str, requester_user_id: str, *, is_admin: bool = False) -> dict[str, Any]:
+    task = active_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    if not is_admin and task.get("user_id") != requester_user_id:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    if task.get("done"):
+        return task
+
+    async with queue_state_lock:
+        is_queued = task_id in queued_task_ids
+        if is_queued:
+            queued_task_ids.remove(task_id)
+
+    if is_queued:
+        await update_task(
+            task_id,
+            status="cancelled",
+            status_label="Отменено",
+            detail="Скачивание отменено",
+            error="Скачивание отменено.",
+            cancel_requested=True,
+            cancelled_by="admin" if is_admin else "user",
+            done=True,
+            queue_position=None,
+        )
+        await refresh_queue_positions()
+    else:
+        await update_task(
+            task_id,
+            status="cancelling",
+            status_label="Отмена",
+            detail="Останавливаю скачивание. Это может занять несколько секунд.",
+            cancel_requested=True,
+            cancelled_by="admin" if is_admin else "user",
+            queue_position=None,
+        )
+
+    return active_tasks.get(task_id) or task
+
+
 async def refresh_queue_positions() -> None:
     async with queue_state_lock:
         for idx, queued_id in enumerate(queued_task_ids, start=1):
@@ -1619,6 +1670,8 @@ def init_task(user_id: str, url: str) -> dict[str, Any]:
         "filename": None,
         "error": None,
         "done": False,
+        "cancel_requested": False,
+        "cancelled_by": None,
         "thumbnail_url": None,
     }
     active_tasks[task_id] = task
@@ -1695,6 +1748,7 @@ def sync_download_media(
 
         try:
             status = data.get("status")
+            ensure_task_not_cancelled(task_id)
             now_monotonic = time.monotonic()
 
             if status == "downloading":
@@ -1752,6 +1806,7 @@ def sync_download_media(
     def postprocessor_hook(data: dict[str, Any]) -> None:
         try:
             status = data.get("status")
+            ensure_task_not_cancelled(task_id)
             postprocessor = data.get("postprocessor") or "FFmpeg"
 
             if status in {"started", "processing"}:
@@ -1816,6 +1871,7 @@ def sync_download_media(
         return new_opts
 
     def ydl_extract_checked(source_opts: dict[str, Any]) -> dict[str, Any]:
+        ensure_task_not_cancelled(task_id)
         if max_file_bytes:
             check_opts = dict(source_opts)
             check_opts["skip_download"] = True
@@ -1825,9 +1881,12 @@ def sync_download_media(
             check_opts["postprocessor_hooks"] = []
             check_opts.pop("downloader", None)
             check_info = ydl_extract(url, check_opts, download=False)
+            ensure_task_not_cancelled(task_id)
             enforce_single_file_size_limit_by_info(check_info, max_file_bytes)
 
+        ensure_task_not_cancelled(task_id)
         downloaded_info = ydl_extract(url, source_opts, download=True)
+        ensure_task_not_cancelled(task_id)
         enforce_single_file_size_limit_by_info(downloaded_info, max_file_bytes)
         return downloaded_info
 
@@ -1936,6 +1995,8 @@ async def download_worker(worker_index: int) -> None:
                 continue
 
             await mark_task_started(task_id)
+            if task.get("cancel_requested"):
+                raise DownloadCancelledError("Скачивание отменено.")
 
             user_id = task["user_id"]
             url = task["url"]
@@ -1958,6 +2019,9 @@ async def download_worker(worker_index: int) -> None:
                 title_hint,
                 requested_height,
             )
+
+            if task.get("cancel_requested"):
+                raise DownloadCancelledError("Скачивание отменено.")
 
             file_row = await register_downloaded_file(
                 user_id=user_id,
@@ -2002,6 +2066,37 @@ async def download_worker(worker_index: int) -> None:
                 "UPDATE downloaded_files SET history_id = ? WHERE file_id = ?",
                 (history_id, file_row["file_id"]),
             )
+
+        except DownloadCancelledError as exc:
+            logger.info("Download task cancelled: %s", task_id)
+            task = active_tasks.get(task_id)
+            user_id = task.get("user_id") if task else None
+            mode = task.get("mode") if task else None
+            url = task.get("url") if task else None
+            title_hint = task.get("title") if task else "Видео"
+
+            await update_task(
+                task_id,
+                status="cancelled",
+                status_label="Отменено",
+                detail="Скачивание отменено",
+                error=str(exc),
+                done=True,
+                queue_position=None,
+            )
+
+            if user_id and mode and url:
+                await append_history(
+                    user_id,
+                    {
+                        "created_at": iso(now_utc()),
+                        "title": title_hint or "Видео",
+                        "mode": mode,
+                        "status": "cancelled",
+                        "error": str(exc),
+                        "source_url": url,
+                    },
+                )
 
         except Exception as exc:
             logger.exception("Download task failed: %s", task_id)
@@ -2370,11 +2465,12 @@ async def get_admin_overview(request: Request) -> dict[str, Any]:
                 "user_id": task.get("user_id"),
                 "user_label": user_label or task.get("user_id"),
                 "status_label": task.get("status_label"),
-                "title": f"Задача {task.get('task_id')}",
+                "title": task.get("title") or f"Задача {task.get('task_id')}",
                 "filename": task.get("filename") or "",
                 "quality_label": build_quality_label(task.get("mode") or "", task.get("format_id"), task.get("requested_height")),
                 "detail": task.get("detail"),
                 "updated_at": task.get("updated_at"),
+                "cancel_requested": bool(task.get("cancel_requested")),
             }
         )
 
@@ -2773,6 +2869,13 @@ async def api_task_status(request: Request, task_id: str):
         raise HTTPException(status_code=404, detail="Задача не найдена.")
     return task
 
+
+@web.post("/api/task/{task_id}/cancel")
+async def api_task_cancel(request: Request, task_id: str):
+    user_id = await get_current_user_id(request)
+    await mark_user_seen(user_id, touch_activity=True)
+    task = await cancel_download_task(task_id, user_id, is_admin=False)
+    return {"ok": True, "task": task}
 
 
 @web.get("/media/download/{token}")
@@ -3197,6 +3300,13 @@ async def api_admin_overview(request: Request):
     await mark_user_seen(user_id, touch_activity=True)
     return await get_admin_overview(request)
 
+
+@web.post("/api/admin/tasks/{task_id}/cancel")
+async def api_admin_task_cancel(request: Request, task_id: str):
+    user_id, _ = await require_admin_user(request)
+    await mark_user_seen(user_id, touch_activity=True)
+    task = await cancel_download_task(task_id, user_id, is_admin=True)
+    return {"ok": True, "task": task, "overview": await get_admin_overview(request)}
 
 
 @web.get("/api/admin/settings")

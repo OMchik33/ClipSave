@@ -135,6 +135,9 @@
                 <h3 id="task-title">—</h3>
                 <p id="task-detail" class="muted">—</p>
               </div>
+              <button id="task-cancel-btn" class="ghost-btn small-btn danger-btn task-cancel-btn hidden" type="button">
+                Отмена
+              </button>
             </div>
 
             <div class="progress-wrap" id="task-progress-wrap">
@@ -184,6 +187,8 @@
                       <a class="ghost-btn small-btn" href="{{ item.download_url }}" target="_blank" rel="noopener">Скачать</a>
                     {% elif item.status == 'done' and item.download_url and not item.file_exists %}
                       <span class="status-inline status-missing">Файл удалён</span>
+                    {% elif item.status == 'cancelled' %}
+                      <span class="status-inline status-missing">Отменено</span>
                     {% else %}
                       <span class="status-inline status-error">Ошибка</span>
                     {% endif %}

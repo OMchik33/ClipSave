@@ -505,6 +505,12 @@ body[data-theme="light"] .spinner {
 
 .task-info {
   min-width: 0;
+  flex: 1;
+}
+
+.task-cancel-btn {
+  flex: 0 0 auto;
+  margin-top: 2px;
 }
 
 .status-badge {
@@ -1220,6 +1226,13 @@ body[data-theme="light"] .progress-bar.is-active {
 .mini-task-meta {
   font-size: 13px;
   line-height: 1.45;
+}
+
+.mini-task-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .status-mini {
