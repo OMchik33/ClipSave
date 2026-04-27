@@ -2,7 +2,7 @@
 
 ClipSave — веб-сервис на FastAPI для скачивания видео/аудио через `yt-dlp` с личными ссылками доступа, cookies-файлами, админкой, очередью задач и автоматической очисткой скачанных файлов.
 
-<img width="1472" height="984" alt="image" src="https://github.com/user-attachments/assets/930a2393-b40a-4db8-ae83-07f458f2f8d6" />
+<img width="1280" height="858" alt="image" src="https://github.com/user-attachments/assets/b4bbe4c6-3234-494b-bf33-a662b73d1b45" />
 
 
 ## Что нового в этой версии
