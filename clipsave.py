@@ -50,8 +50,8 @@ WEB_LOGIN_KEY = os.getenv("WEB_LOGIN_KEY", "change_me_login")
 WEB_ADMIN_LOGIN_KEY = os.getenv("WEB_ADMIN_LOGIN_KEY", "change_me_admin_login")
 ADMIN_COOKIES_FILE = os.getenv("ADMIN_COOKIES_FILE", "admin_cookies.txt")
 WEB_BASE_PATH = os.getenv("WEB_BASE_PATH", "/df2sf4gf54dfchg45dfg4h5fg4").rstrip("/") or "/app"
-WEB_COOKIE_UID = os.getenv("WEB_COOKIE_UID", "web_ytd_uid")
-WEB_COOKIE_SESSION = os.getenv("WEB_COOKIE_SESSION", "web_ytd_session")
+WEB_COOKIE_UID = os.getenv("WEB_COOKIE_UID", "clipsave_uid")
+WEB_COOKIE_SESSION = os.getenv("WEB_COOKIE_SESSION", "clipsave_session")
 WEB_UID_MAX_AGE = int(os.getenv("WEB_UID_MAX_AGE", str(180 * 24 * 3600)))
 WEB_SESSION_MAX_AGE = int(os.getenv("WEB_SESSION_MAX_AGE", str(7 * 24 * 3600)))
 USER_RETENTION_DAYS = int(os.getenv("USER_RETENTION_DAYS", "30"))
@@ -64,7 +64,7 @@ DATA_PATH = resolve_path_env(os.getenv("DATA_PATH", "data"), BASE_DIR / "data")
 LOG_PATH = resolve_path_env(os.getenv("LOG_PATH", "logs"), BASE_DIR / "logs")
 PUBLIC_BASE_URL = os.getenv("WEB_PUBLIC_BASE_URL", os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
 DEBUG_YTDLP = os.getenv("DEBUG_YTDLP", "0") == "1"
-SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "web_ytd.sqlite3")
+SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "clipsave.sqlite3")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "").strip()
 
 DB_PATH = resolve_path_env(SQLITE_PATH, DATA_PATH / SQLITE_DB_NAME)
@@ -84,11 +84,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(LOG_PATH / "web_ytd.log", encoding="utf-8"),
+        logging.FileHandler(LOG_PATH / "clipsave.log", encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("web_ytd")
+logger = logging.getLogger("clipsave")
 
 REQUEST_TTL = dt.timedelta(hours=REQUEST_TTL_HOURS)
 USER_RETENTION = dt.timedelta(days=USER_RETENTION_DAYS)
