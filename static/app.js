@@ -258,20 +258,61 @@ function setTaskVisible() {
   }
 }
 
-function setTaskProgressState(state) {
+function setTaskProgressState(state, progress = null) {
   if (!taskProgress) {
     return;
   }
 
-  taskProgress.classList.remove('is-active', 'is-done', 'is-error');
+  taskProgress.classList.remove('is-active', 'is-indeterminate', 'is-done', 'is-error');
+  taskProgress.style.width = '';
 
   if (state === 'done') {
     taskProgress.classList.add('is-done');
-  } else if (state === 'error') {
-    taskProgress.classList.add('is-error');
-  } else {
-    taskProgress.classList.add('is-active');
+    taskProgress.style.width = '100%';
+    return;
   }
+
+  if (state === 'error') {
+    taskProgress.classList.add('is-error');
+    taskProgress.style.width = '100%';
+    return;
+  }
+
+  const percent = progress && Number.isFinite(Number(progress.percent))
+    ? Math.max(0, Math.min(100, Number(progress.percent)))
+    : null;
+
+  taskProgress.classList.add('is-active');
+
+  if (progress && progress.kind === 'determinate' && percent !== null) {
+    taskProgress.style.width = `${percent}%`;
+  } else {
+    taskProgress.classList.add('is-indeterminate');
+  }
+}
+
+function formatProgressPercent(progress) {
+  if (!progress || progress.kind !== 'determinate' || !Number.isFinite(Number(progress.percent))) {
+    return '';
+  }
+
+  const percent = Math.max(0, Math.min(100, Number(progress.percent)));
+  if (Number.isInteger(percent)) {
+    return `${percent}%`;
+  }
+  return `${percent.toFixed(1)}%`;
+}
+
+function buildTaskDetailText(task) {
+  const progress = task.progress || null;
+  const percentText = formatProgressPercent(progress);
+  const detailText = task.detail || 'Обработка';
+
+  if (percentText && task.status === 'downloading') {
+    return `${percentText} · ${detailText}`;
+  }
+
+  return detailText;
 }
 
 function setTaskBadgeState(state) {
@@ -426,7 +467,7 @@ function updateTaskUi(task) {
   setTaskVisible();
 
   const statusText = task.status_label || task.status || 'Статус';
-  const detailText = task.detail || 'Обработка';
+  const detailText = buildTaskDetailText(task);
   const titleText = task.title || (currentAnalysis && currentAnalysis.title) || 'Видео';
   const notifyKey = task.task_id || currentTaskId || 'task';
 
@@ -436,7 +477,7 @@ function updateTaskUi(task) {
 
   if (task.status === 'done') {
     setTaskBadgeState('done');
-    setTaskProgressState('done');
+    setTaskProgressState('done', task.progress);
     taskResult.classList.remove('hidden');
     taskError.classList.add('hidden');
     if (taskCancelBtn) {
@@ -457,7 +498,7 @@ function updateTaskUi(task) {
     }
   } else if (task.status === 'error') {
     setTaskBadgeState('error');
-    setTaskProgressState('error');
+    setTaskProgressState('error', task.progress);
     taskResult.classList.add('hidden');
     taskError.classList.remove('hidden');
     taskError.textContent = task.error || task.detail || 'Неизвестная ошибка';
@@ -473,7 +514,7 @@ function updateTaskUi(task) {
     }
   } else if (task.status === 'cancelled') {
     setTaskBadgeState('error');
-    setTaskProgressState('error');
+    setTaskProgressState('error', task.progress);
     taskResult.classList.add('hidden');
     taskError.classList.remove('hidden');
     taskError.textContent = task.error || task.detail || 'Скачивание отменено.';
@@ -484,7 +525,7 @@ function updateTaskUi(task) {
     }
   } else {
     setTaskBadgeState('active');
-    setTaskProgressState('active');
+    setTaskProgressState('active', task.progress);
     taskResult.classList.add('hidden');
     taskError.classList.add('hidden');
     if (taskCancelBtn) {
@@ -568,7 +609,7 @@ async function startDownload(mode, formatId = null) {
 
     setTaskVisible();
     setTaskBadgeState('active');
-    setTaskProgressState('active');
+    setTaskProgressState('active', data.progress);
 
     taskStatusBadge.textContent = data.status_label || 'Создано';
     taskTitle.textContent = currentAnalysis.title || 'Видео';
