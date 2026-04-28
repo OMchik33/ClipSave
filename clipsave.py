@@ -49,6 +49,7 @@ WEB_SECRET_KEY = os.getenv("WEB_SECRET_KEY", "change_me")
 WEB_LOGIN_KEY = os.getenv("WEB_LOGIN_KEY", "change_me_login")
 WEB_ADMIN_LOGIN_KEY = os.getenv("WEB_ADMIN_LOGIN_KEY", "change_me_admin_login")
 ADMIN_COOKIES_FILE = os.getenv("ADMIN_COOKIES_FILE", "admin_cookies.txt")
+ADMIN_COOKIES_UPLOADED_AT_FILE = f".{ADMIN_COOKIES_FILE}.uploaded_at"
 WEB_BASE_PATH = os.getenv("WEB_BASE_PATH", "/df2sf4gf54dfchg45dfg4h5fg4").rstrip("/") or "/app"
 WEB_COOKIE_UID = os.getenv("WEB_COOKIE_UID", "clipsave_uid")
 WEB_COOKIE_SESSION = os.getenv("WEB_COOKIE_SESSION", "clipsave_session")
@@ -840,6 +841,36 @@ def get_file_mtime_iso(path: Path | None) -> str | None:
         return None
 
 
+def get_admin_cookie_uploaded_at() -> str | None:
+    meta_path = COOKIES_PATH / ADMIN_COOKIES_UPLOADED_AT_FILE
+    try:
+        value = meta_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        value = get_file_mtime_iso(get_admin_cookie_file())
+        if value:
+            try:
+                meta_path.write_text(value, encoding="utf-8")
+            except Exception:
+                logger.exception("Failed to save admin cookies upload time")
+        return value
+    except Exception:
+        logger.exception("Failed to read admin cookies upload time")
+        return get_file_mtime_iso(get_admin_cookie_file())
+
+    return value or get_file_mtime_iso(get_admin_cookie_file())
+
+
+def set_admin_cookie_uploaded_at(value: str) -> None:
+    meta_path = COOKIES_PATH / ADMIN_COOKIES_UPLOADED_AT_FILE
+    meta_path.write_text(value, encoding="utf-8")
+
+
+def delete_admin_cookie_uploaded_at() -> None:
+    meta_path = COOKIES_PATH / ADMIN_COOKIES_UPLOADED_AT_FILE
+    if meta_path.exists():
+        meta_path.unlink()
+
+
 def inspect_cookie_file(path: Path | None) -> dict[str, str]:
     if not path or not path.exists():
         return {
@@ -921,7 +952,7 @@ def build_effective_cookie_state(user_id: str, user_meta: dict[str, Any]) -> dic
         return {
             "source": "admin",
             "filename": admin_cookie.name,
-            "uploaded_at": get_file_mtime_iso(admin_cookie),
+            "uploaded_at": get_admin_cookie_uploaded_at(),
             "status_class": state["status_class"],
             "status_text": state["status_text"],
             "helper_text": "Используется общий cookies администратора",
@@ -944,7 +975,7 @@ def build_admin_cookie_state() -> dict[str, Any]:
         return {
             "source": "admin",
             "filename": admin_cookie.name,
-            "uploaded_at": get_file_mtime_iso(admin_cookie),
+            "uploaded_at": get_admin_cookie_uploaded_at(),
             "status_class": state["status_class"],
             "status_text": state["status_text"],
             "helper_text": "Этот файл используется по умолчанию для всех пользователей без личного cookies",
@@ -2860,6 +2891,7 @@ async def upload_admin_cookies(request: Request, file: UploadFile = File(...)):
 
     target = COOKIES_PATH / ADMIN_COOKIES_FILE
     target.write_text(text, encoding="utf-8")
+    set_admin_cookie_uploaded_at(iso(now_utc()))
     await mark_user_seen(user_id, touch_activity=True)
 
     meta = await get_user_by_id(user_id)
@@ -2884,6 +2916,7 @@ async def delete_admin_cookies(request: Request):
     try:
         if target.exists():
             target.unlink()
+        delete_admin_cookie_uploaded_at()
     except Exception as exc:
         logger.exception("Failed to delete admin cookies")
         raise HTTPException(status_code=500, detail=f"Не удалось удалить общий cookies.txt: {exc}")
