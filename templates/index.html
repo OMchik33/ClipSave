@@ -411,12 +411,46 @@
           <details class="admin-details" open>
             <summary>Хранение, лимиты и качество</summary>
             <form id="admin-settings-form" class="settings-grid">
-              <label>Хранить файлы, минут <input name="download_retention_minutes" id="setting-download-retention" class="text-input" type="number" min="1"></label>
-              <label>Продлевать при просмотре, минут <input name="watch_extend_minutes" id="setting-watch-extend" class="text-input" type="number" min="1"></label>
-              <label>Макс. размер файла, ГБ <input name="max_single_file_gb" id="setting-max-file-gb" class="text-input" type="text" inputmode="decimal"></label>
-              <label>Квота каталога загрузок, ГБ <input name="max_download_dir_gb" id="setting-max-dir-gb" class="text-input" type="text" inputmode="decimal"></label>
-              <label>Минимум свободно на диске, ГБ <input name="min_free_disk_gb" id="setting-min-free-gb" class="text-input" type="text" inputmode="decimal"></label>
-              <label>Макс. качество
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Сколько минут скаченный файл хранится на сервере. Удобно, если пользователь скачивает файл не сразу или у него медленный интернет.">
+                  Хранить файлы, минут
+                  <span class="setting-tooltip-content" role="tooltip">Сколько минут скачанный файл хранится на сервере. Удобно, если пользователь скачивает файл не сразу или у него медленный интернет.</span>
+                </span>
+                <input name="download_retention_minutes" id="setting-download-retention" class="text-input" type="number" min="1">
+              </label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="На сколько минут продлевать хранение файла, если пользователь открыл его для просмотра. Полезно для видео, которые длятся несколько часов.">
+                  Продлевать при просмотре, минут
+                  <span class="setting-tooltip-content" role="tooltip">На сколько минут продлевать хранение файла, если пользователь открыл его для просмотра. Полезно для видео, которые длятся несколько часов.</span>
+                </span>
+                <input name="watch_extend_minutes" id="setting-watch-extend" class="text-input" type="number" min="1">
+              </label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Максимальный размер одного обычного скачивания. Защищает сервер от слишком больших файлов.">
+                  Макс. размер файла, ГБ
+                  <span class="setting-tooltip-content" role="tooltip">Максимальный размер одного обычного скачивания. Защищает сервер от слишком больших файлов.</span>
+                </span>
+                <input name="max_single_file_gb" id="setting-max-file-gb" class="text-input" type="text" inputmode="decimal">
+              </label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Максимальный общий размер папки с сохранёнными файлами ClipSave. Проверяется перед обычным скачиванием.">
+                  Квота каталога загрузок, ГБ
+                  <span class="setting-tooltip-content" role="tooltip">Максимальный общий размер папки с сохранёнными файлами ClipSave. Проверяется перед обычным скачиванием.</span>
+                </span>
+                <input name="max_download_dir_gb" id="setting-max-dir-gb" class="text-input" type="text" inputmode="decimal">
+              </label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Минимальный запас свободного места на диске перед запуском обычного скачивания. Нужен, чтобы сервер не работал на полностью забитом диске.">
+                  Минимум свободно на диске, ГБ
+                  <span class="setting-tooltip-content" role="tooltip">Минимальный запас свободного места на диске перед запуском обычного скачивания. Нужен, чтобы сервер не работал на полностью забитом диске.</span>
+                </span>
+                <input name="min_free_disk_gb" id="setting-min-free-gb" class="text-input" type="text" inputmode="decimal">
+              </label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Максимальное качество видео, доступное пользователям. Чем выше качество, тем обычно больше размер файла.">
+                  Макс. качество
+                  <span class="setting-tooltip-content" role="tooltip">Максимальное качество видео, доступное пользователям. Чем выше качество, тем обычно больше размер файла.</span>
+                </span>
                 <select name="max_video_height" id="setting-max-video-height" class="text-input">
                   <option value="720">720p</option>
                   <option value="1080">1080p</option>
@@ -425,7 +459,11 @@
                   <option value="0">Без ограничения</option>
                 </select>
               </label>
-              <label>Качество по умолчанию
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Качество, которое сервис выбирает автоматически, если пользователь не выбирает другое.">
+                  Качество по умолчанию
+                  <span class="setting-tooltip-content" role="tooltip">Качество, которое сервис выбирает автоматически, если пользователь не выбирает другое.</span>
+                </span>
                 <select name="default_user_quality" id="setting-default-quality" class="text-input">
                   <option value="720">720p</option>
                   <option value="1080">1080p</option>
@@ -434,23 +472,28 @@
                 </select>
               </label>
 
-              <label class="check-row"><input name="extend_expiry_on_watch" id="setting-extend-watch" type="checkbox"> Продлевать срок при открытии просмотра</label>
-              <label class="check-row"><input name="user_quality_selection_enabled" id="setting-user-quality" type="checkbox"> Пользователь выбирает качество</label>
-              <label class="check-row"><input name="allow_unlimited_file_size" id="setting-unlimited-file" type="checkbox"> Не ограничивать размер одного файла</label>
-              <label class="check-row"><input name="allow_unlimited_download_dir" id="setting-unlimited-dir" type="checkbox"> Не ограничивать квоту каталога</label>
-              <label class="check-row"><input name="allow_unlimited_quality" id="setting-unlimited-quality" type="checkbox"> Не ограничивать качество</label>
-              <label class="check-row check-row-with-help">
-                <input name="admin_bypass_user_limits" id="setting-admin-bypass-limits" type="checkbox">
-                <span>Админ без пользовательских ограничений</span>
-                <span class="help-tooltip" tabindex="0" aria-label="Администратор сможет скачивать видео и прокси-файлы без ограничений по размеру и качеству. Ограничения по свободному месту и общей квоте каталога загрузок продолжат действовать.">
-                  ?
-                  <span class="help-tooltip-content" role="tooltip">Администратор сможет скачивать видео и прокси-файлы без ограничений по размеру и качеству. Ограничения по свободному месту и общей квоте каталога загрузок продолжат действовать.</span>
-                </span>
-              </label>
-              <label class="check-row"><input name="experimental_proxy_download_enabled" id="setting-proxy-enabled" type="checkbox"> Включить прокси-скачивание</label>
+              <label class="check-row"><input name="extend_expiry_on_watch" id="setting-extend-watch" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Если включено, срок хранения файла обновляется при открытии страницы просмотра. Полезно для длинных видео, которые длятся несколько часов.">Продлевать срок при открытии просмотра<span class="setting-tooltip-content" role="tooltip">Если включено, срок хранения файла обновляется при открытии страницы просмотра. Полезно для длинных видео, которые длятся несколько часов.</span></span></label>
+              <label class="check-row"><input name="user_quality_selection_enabled" id="setting-user-quality" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Если включено, пользователь сам выбирает качество перед скачиванием. Если выключено, используется качество по умолчанию.">Пользователь выбирает качество<span class="setting-tooltip-content" role="tooltip">Если включено, пользователь сам выбирает качество перед скачиванием. Если выключено, используется качество по умолчанию.</span></span></label>
+              <label class="check-row"><input name="allow_unlimited_file_size" id="setting-unlimited-file" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Отключает лимит размера одного файла. Квота каталога загрузок и минимум свободного места перед стартом всё равно продолжают действовать.">Не ограничивать размер одного файла<span class="setting-tooltip-content" role="tooltip">Отключает лимит размера одного файла. Квота каталога загрузок и минимум свободного места перед стартом всё равно продолжают действовать.</span></span></label>
+              <label class="check-row"><input name="allow_unlimited_download_dir" id="setting-unlimited-dir" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Отключает общий лимит папки загрузок. Минимум свободного места на диске перед стартом всё равно продолжает действовать.">Не ограничивать квоту каталога<span class="setting-tooltip-content" role="tooltip">Отключает общий лимит папки загрузок. Минимум свободного места на диске перед стартом всё равно продолжает действовать.</span></span></label>
+              <label class="check-row"><input name="allow_unlimited_quality" id="setting-unlimited-quality" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Разрешает скачивать любое доступное качество. Может увеличивать размер файлов и время скачивания. Квота каталога загрузок и минимум свободного места перед стартом всё равно продолжают действовать.">Не ограничивать качество<span class="setting-tooltip-content" role="tooltip">Разрешает скачивать любое доступное качество. Может увеличивать размер файлов и время скачивания. Квота каталога загрузок и минимум свободного места перед стартом всё равно продолжают действовать.</span></span></label>
+              <label class="check-row"><input name="admin_bypass_user_limits" id="setting-admin-bypass-limits" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Админ может скачивать без пользовательских лимитов размера файла и качества (в т.ч. безлимитно прокси скачивание). Квота каталога загрузок и минимум свободного места на диске всё равно продолжают действовать.">Админ без пользовательских ограничений<span class="setting-tooltip-content" role="tooltip">Админ может скачивать без пользовательских лимитов размера файла и качества (в том числе прокси-скачивание без ограничений). Квота каталога загрузок и минимум свободного места на диске всё равно продолжают действовать.</span></span></label>
+              <label class="check-row"><input name="experimental_proxy_download_enabled" id="setting-proxy-enabled" type="checkbox"> <span class="setting-label-tooltip" tabindex="0" aria-label="Сервис позволяет скачивать через себя как через прокси или VPN, выступая посредником между видеохостингом и компьютером пользователя.">Включить прокси-скачивание<span class="setting-tooltip-content" role="tooltip">Сервис позволяет скачивать через себя как через прокси или VPN, выступая посредником между видеохостингом и компьютером пользователя.</span></span></label>
 
-              <label>Прокси лимит файла, ГБ <input name="experimental_proxy_max_file_gb" id="setting-proxy-max-gb" class="text-input" type="text" inputmode="decimal"></label>
-              <label>Прокси ссылки живут, минут <input name="experimental_proxy_max_duration_minutes" id="setting-proxy-minutes" class="text-input" type="number" min="1"></label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Максимальный размер потока, который разрешено передавать через прокси-скачивание. Файл не сохраняется на сервере, но большой поток дольше занимает соединение и создаёт нагрузку на сервис.">
+                  Прокси лимит файла, ГБ
+                  <span class="setting-tooltip-content" role="tooltip">Максимальный размер потока, который разрешено передавать через прокси-скачивание. Файл не сохраняется на сервере, но большой поток дольше занимает соединение и создаёт нагрузку на сервис.</span>
+                </span>
+                <input name="experimental_proxy_max_file_gb" id="setting-proxy-max-gb" class="text-input" type="text" inputmode="decimal">
+              </label>
+              <label>
+                <span class="setting-label-tooltip" tabindex="0" aria-label="Сколько минут действует созданная прокси-ссылка. Видеохостинги часто выдают короткоживущие ссылки, поэтому их нужно использовать сразу.">
+                  Прокси ссылки живут, минут
+                  <span class="setting-tooltip-content" role="tooltip">Сколько минут действует созданная прокси-ссылка. Видеохостинги часто выдают короткоживущие ссылки, поэтому их нужно использовать сразу.</span>
+                </span>
+                <input name="experimental_proxy_max_duration_minutes" id="setting-proxy-minutes" class="text-input" type="number" min="1">
+              </label>
 
               <div class="settings-actions">
                 <button class="primary-btn" type="submit">Сохранить настройки</button>
