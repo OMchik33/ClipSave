@@ -75,6 +75,7 @@
             </div>
 
             <div class="quality-panel">
+              <div class="section-title">Качество видео</div>
               <label class="field-label" for="quality-select">Качество перед скачиванием</label>
               <select id="quality-select" class="text-input">
                 <option value="720">720p</option>
@@ -83,15 +84,22 @@
                 <option value="2160">4K / 2160p</option>
               </select>
               <p class="muted helper-text helper-text-compact">
-                Выбери качество до скачивания...
+                Сервис выберет лучший доступный формат под выбранное качество.
               </p>
             </div>
 
             <div class="download-actions">
               <button class="secondary-btn action-btn" type="button" data-mode="bestq">Скачать видео</button>
               <button class="secondary-btn action-btn" type="button" data-mode="audio">MP3</button>
-              <button id="proxy-download-btn" class="secondary-btn action-btn hidden" type="button">Прокси-скачивание</button>
               <button id="thumbnail-btn" class="secondary-btn action-btn hidden" type="button">Обложка</button>
+            </div>
+
+            <div class="extra-actions-panel">
+              <div class="section-title">Дополнительно</div>
+              <div class="download-actions extra-actions">
+                <button id="proxy-download-btn" class="secondary-btn action-btn hidden" type="button">Прокси-скачивание</button>
+                <button id="formats-toggle-btn" class="secondary-btn action-btn hidden" type="button">Показать все доступные форматы</button>
+              </div>
             </div>
 
             <div id="proxy-help" class="muted helper-text proxy-help hidden">
@@ -107,7 +115,7 @@
               </div>
             </div>
 
-            <div>
+            <div id="formats-section" class="formats-section hidden">
               <div class="section-title">Доступные форматы</div>
               <div id="formats-list" class="formats-grid"></div>
             </div>
@@ -432,6 +440,14 @@
               <label class="check-row"><input name="allow_unlimited_file_size" id="setting-unlimited-file" type="checkbox"> Не ограничивать размер одного файла</label>
               <label class="check-row"><input name="allow_unlimited_download_dir" id="setting-unlimited-dir" type="checkbox"> Не ограничивать квоту каталога</label>
               <label class="check-row"><input name="allow_unlimited_quality" id="setting-unlimited-quality" type="checkbox"> Не ограничивать качество</label>
+              <label class="check-row check-row-with-help">
+                <input name="admin_bypass_user_limits" id="setting-admin-bypass-limits" type="checkbox">
+                <span>Админ без пользовательских ограничений</span>
+                <span class="help-tooltip" tabindex="0" aria-label="Администратор сможет скачивать видео и прокси-файлы без ограничений по размеру и качеству. Ограничения по свободному месту и общей квоте каталога загрузок продолжат действовать.">
+                  ?
+                  <span class="help-tooltip-content" role="tooltip">Администратор сможет скачивать видео и прокси-файлы без ограничений по размеру и качеству. Ограничения по свободному месту и общей квоте каталога загрузок продолжат действовать.</span>
+                </span>
+              </label>
               <label class="check-row"><input name="experimental_proxy_download_enabled" id="setting-proxy-enabled" type="checkbox"> Включить прокси-скачивание</label>
 
               <label>Прокси лимит файла, ГБ <input name="experimental_proxy_max_file_gb" id="setting-proxy-max-gb" class="text-input" type="text" inputmode="decimal"></label>

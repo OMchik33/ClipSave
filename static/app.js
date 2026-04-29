@@ -11,6 +11,8 @@ const videoUrlInput = document.getElementById('video-url');
 const videoTitle = document.getElementById('video-title');
 const videoUrlView = document.getElementById('video-url-view');
 const formatsList = document.getElementById('formats-list');
+const formatsSection = document.getElementById('formats-section');
+const formatsToggleBtn = document.getElementById('formats-toggle-btn');
 const thumbnailBtn = document.getElementById('thumbnail-btn');
 const qualitySelect = document.getElementById('quality-select');
 const proxyDownloadBtn = document.getElementById('proxy-download-btn');
@@ -420,6 +422,13 @@ function renderAnalysis(data) {
   if (formatsList) {
     formatsList.innerHTML = '';
   }
+  if (formatsSection) {
+    formatsSection.classList.add('hidden');
+  }
+  if (formatsToggleBtn) {
+    formatsToggleBtn.classList.add('hidden');
+    formatsToggleBtn.textContent = 'Показать все доступные форматы';
+  }
 
   updateQualitySelect(data.settings || {});
   if (proxyDownloadBtn) {
@@ -444,23 +453,28 @@ function renderAnalysis(data) {
     }
   }
 
-  if (Array.isArray(data.formats) && data.formats.length) {
-    data.formats.forEach((item) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'secondary-btn format-btn';
-      btn.textContent = item.label;
-      btn.addEventListener('click', () => startDownload('pick', item.format_id));
-      formatsList.appendChild(btn);
-    });
-  } else {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'Форматы не удалось отобразить. Можно использовать режимы скачивания выше.';
-    formatsList.appendChild(empty);
+  if (formatsList) {
+    if (Array.isArray(data.formats) && data.formats.length) {
+      data.formats.forEach((item) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'secondary-btn format-btn';
+        btn.textContent = item.label;
+        btn.addEventListener('click', () => startDownload('pick', item.format_id));
+        formatsList.appendChild(btn);
+      });
+      if (formatsToggleBtn) {
+        formatsToggleBtn.classList.remove('hidden');
+      }
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.textContent = 'Форматы не удалось отобразить. Можно использовать режимы скачивания выше.';
+      formatsList.appendChild(empty);
+    }
   }
 
-  showToast('Анализ завершён. Можно выбирать формат.', 'info');
+  showToast('Анализ завершён. Можно скачивать видео.', 'info');
 }
 
 function updateTaskUi(task) {
@@ -752,6 +766,7 @@ function applySettingsToForm(settings) {
   setCheckboxValue('setting-unlimited-file', settings.allow_unlimited_file_size);
   setCheckboxValue('setting-unlimited-dir', settings.allow_unlimited_download_dir);
   setCheckboxValue('setting-unlimited-quality', settings.allow_unlimited_quality);
+  setCheckboxValue('setting-admin-bypass-limits', settings.admin_bypass_user_limits);
   setCheckboxValue('setting-proxy-enabled', settings.experimental_proxy_download_enabled);
   setInputValue('setting-proxy-max-gb', settings.experimental_proxy_max_file_gb);
   setInputValue('setting-proxy-minutes', settings.experimental_proxy_max_duration_minutes);
@@ -1097,6 +1112,13 @@ analyzeForm?.addEventListener('submit', async (event) => {
       thumbnailBtn.classList.add('hidden');
       thumbnailBtn.disabled = true;
     }
+    if (formatsSection) {
+      formatsSection.classList.add('hidden');
+    }
+    if (formatsToggleBtn) {
+      formatsToggleBtn.classList.add('hidden');
+      formatsToggleBtn.textContent = 'Показать все доступные форматы';
+    }
 
     const data = await postForm(apiUrl('/api/analyze'), form);
     renderAnalysis(data);
@@ -1116,6 +1138,16 @@ document.querySelectorAll('[data-mode]').forEach((btn) => {
 });
 
 thumbnailBtn?.addEventListener('click', downloadThumbnail);
+
+formatsToggleBtn?.addEventListener('click', () => {
+  if (!formatsSection) {
+    return;
+  }
+
+  const shouldShow = formatsSection.classList.contains('hidden');
+  formatsSection.classList.toggle('hidden', !shouldShow);
+  formatsToggleBtn.textContent = shouldShow ? 'Скрыть доступные форматы' : 'Показать все доступные форматы';
+});
 
 cookiesForm?.addEventListener('submit', async (event) => {
   event.preventDefault();

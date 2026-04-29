@@ -1419,3 +1419,79 @@ body[data-theme="light"] .progress-bar.is-indeterminate {
 .proxy-result-actions .small-btn {
   text-align: center;
 }
+
+
+.extra-actions-panel,
+.formats-section {
+  margin-top: 16px;
+}
+
+.extra-actions {
+  margin-top: 8px;
+}
+
+.check-row-with-help {
+  position: relative;
+}
+
+.check-row-with-help input {
+  flex: 0 0 auto;
+}
+
+.check-row-with-help > span:not(.help-tooltip) {
+  min-width: 0;
+}
+
+.help-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--ghost-bg);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: help;
+}
+
+.help-tooltip-content {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 30;
+  display: none;
+  width: min(320px, 72vw);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--toast-bg);
+  color: var(--text);
+  box-shadow: var(--shadow-soft);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.help-tooltip:hover .help-tooltip-content,
+.help-tooltip:focus .help-tooltip-content,
+.help-tooltip:focus-within .help-tooltip-content {
+  display: block;
+}
+
+.extra-actions-panel + .proxy-help {
+  margin-top: 14px;
+}
+
+.settings-help {
+  grid-column: 1 / -1;
+  margin: -4px 0 0;
+  font-size: 0.88rem;
+}

@@ -329,6 +329,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "allow_unlimited_file_size": "0",
     "allow_unlimited_download_dir": "0",
     "allow_unlimited_quality": "0",
+    "admin_bypass_user_limits": "0",
     "user_quality_selection_enabled": "1",
     "default_user_quality": "1080",
     "experimental_proxy_download_enabled": "0",
@@ -354,6 +355,17 @@ def parse_decimal_setting(value: Any, default: Decimal) -> Decimal:
 
 def setting_bool(settings: dict[str, str], key: str) -> bool:
     return str(settings.get(key, DEFAULT_SETTINGS.get(key, "0"))).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_admin_user_sync(user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    user = _db_fetchone("SELECT is_admin FROM users WHERE user_id = ?", (user_id,))
+    return bool(user and user.get("is_admin"))
+
+
+def should_bypass_user_limits(settings: dict[str, str], user_id: str | None) -> bool:
+    return setting_bool(settings, "admin_bypass_user_limits") and is_admin_user_sync(user_id)
 
 
 def setting_int(settings: dict[str, str], key: str, default: int) -> int:
@@ -434,6 +446,7 @@ async def update_settings_from_form(form: dict[str, Any]) -> dict[str, str]:
         "allow_unlimited_file_size": "1" if str(form.get("allow_unlimited_file_size", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "allow_unlimited_download_dir": "1" if str(form.get("allow_unlimited_download_dir", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "allow_unlimited_quality": "1" if str(form.get("allow_unlimited_quality", "")).lower() in {"1", "true", "on", "yes"} else "0",
+        "admin_bypass_user_limits": "1" if str(form.get("admin_bypass_user_limits", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "user_quality_selection_enabled": "1" if str(form.get("user_quality_selection_enabled", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "default_user_quality": str(normalize_quality_height(form.get("default_user_quality"), allow_unlimited=True)),
         "experimental_proxy_download_enabled": "1" if str(form.get("experimental_proxy_download_enabled", "")).lower() in {"1", "true", "on", "yes"} else "0",
@@ -485,6 +498,7 @@ def settings_public_view(settings: dict[str, str]) -> dict[str, Any]:
         "allow_unlimited_file_size": setting_bool(settings, "allow_unlimited_file_size"),
         "allow_unlimited_download_dir": setting_bool(settings, "allow_unlimited_download_dir"),
         "allow_unlimited_quality": setting_bool(settings, "allow_unlimited_quality"),
+        "admin_bypass_user_limits": setting_bool(settings, "admin_bypass_user_limits"),
         "user_quality_selection_enabled": setting_bool(settings, "user_quality_selection_enabled"),
         "default_user_quality": default_quality,
         "experimental_proxy_download_enabled": setting_bool(settings, "experimental_proxy_download_enabled"),
@@ -493,8 +507,8 @@ def settings_public_view(settings: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def allowed_quality_options(settings: dict[str, str]) -> list[int]:
-    if setting_bool(settings, "allow_unlimited_quality") or setting_int(settings, "max_video_height", 1080) == 0:
+def allowed_quality_options(settings: dict[str, str], *, bypass_user_limits: bool = False) -> list[int]:
+    if bypass_user_limits or setting_bool(settings, "allow_unlimited_quality") or setting_int(settings, "max_video_height", 1080) == 0:
         return QUALITY_HEIGHTS[:]
     max_height = setting_int(settings, "max_video_height", 1080)
     return [height for height in QUALITY_HEIGHTS if height <= max_height]
@@ -1562,7 +1576,8 @@ def sync_analyze_url(user_id: str, url: str) -> dict[str, Any]:
     url = clean_youtube_url(url.strip())
     settings = _get_settings_sync()
     max_height = setting_int(settings, "max_video_height", 1080)
-    allow_unlimited_quality = setting_bool(settings, "allow_unlimited_quality") or max_height == 0
+    bypass_user_limits = should_bypass_user_limits(settings, user_id)
+    allow_unlimited_quality = bypass_user_limits or setting_bool(settings, "allow_unlimited_quality") or max_height == 0
     opts_info = build_base_ydl_opts(user_id, skip_download=True, quiet=True)
     info = ydl_extract(url, opts_info, download=False)
 
@@ -1623,7 +1638,7 @@ def sync_analyze_url(user_id: str, url: str) -> dict[str, Any]:
         "thumbnail_url": thumbnail_url,
         "formats": available,
         "settings": {
-            "quality_options": allowed_quality_options(settings),
+            "quality_options": allowed_quality_options(settings, bypass_user_limits=bypass_user_limits),
             "default_user_quality": setting_int(settings, "default_user_quality", 1080),
             "experimental_proxy_download_enabled": setting_bool(settings, "experimental_proxy_download_enabled"),
         },
@@ -1806,12 +1821,13 @@ def sync_download_media(
 ) -> dict[str, Any]:
     opts = build_base_ydl_opts(user_id, skip_download=False, quiet=False, task_id=task_id)
     settings = _get_settings_sync()
+    bypass_user_limits = should_bypass_user_limits(settings, user_id)
     max_file_bytes = None
-    if not setting_bool(settings, "allow_unlimited_file_size"):
+    if not bypass_user_limits and not setting_bool(settings, "allow_unlimited_file_size"):
         max_file_bytes = setting_gb_to_bytes(settings, "max_single_file_gb", Decimal("4"))
         opts["max_filesize"] = max_file_bytes
     max_height = setting_int(settings, "max_video_height", 1080)
-    if setting_bool(settings, "allow_unlimited_quality"):
+    if bypass_user_limits or setting_bool(settings, "allow_unlimited_quality"):
         max_height = 0
     if requested_height:
         if max_height and requested_height > max_height:
@@ -3201,6 +3217,7 @@ async def api_proxy_download(
 ):
     user_id = await get_current_user_id(request)
     settings = await get_settings()
+    bypass_user_limits = should_bypass_user_limits(settings, user_id)
     if not setting_bool(settings, "experimental_proxy_download_enabled"):
         raise HTTPException(status_code=403, detail="Прокси-скачивание отключено администратором.")
 
@@ -3212,14 +3229,14 @@ async def api_proxy_download(
     await _proxy_cleanup_expired_tokens()
 
     max_height = quality_height or setting_int(settings, "default_user_quality", 1080)
-    if setting_bool(settings, "allow_unlimited_quality"):
+    if bypass_user_limits or setting_bool(settings, "allow_unlimited_quality"):
         max_height = quality_height or 0
 
     opts = build_base_ydl_opts(user_id, skip_download=True, quiet=True)
     opts["format"] = "bv*+ba/b"
 
     max_file_bytes = None
-    if not setting_bool(settings, "allow_unlimited_file_size"):
+    if not bypass_user_limits and not setting_bool(settings, "allow_unlimited_file_size"):
         max_file_bytes = setting_gb_to_bytes(settings, "experimental_proxy_max_file_gb", Decimal("2"))
 
     try:
