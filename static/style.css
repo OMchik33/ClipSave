@@ -356,6 +356,7 @@ button:disabled,
 
 .analysis-loading {
   display: flex;
+  margin-top: 18px;
   align-items: center;
   gap: 14px;
   border: 1px solid var(--border);
@@ -445,6 +446,10 @@ body[data-theme="light"] .spinner {
 }
 
 .analysis-empty-block {
+  margin-top: 18px;
+}
+
+#analysis-box {
   margin-top: 18px;
 }
 
