@@ -66,6 +66,10 @@ DATA_PATH = resolve_path_env(os.getenv("DATA_PATH", "data"), BASE_DIR / "data")
 LOG_PATH = resolve_path_env(os.getenv("LOG_PATH", "logs"), BASE_DIR / "logs")
 PUBLIC_BASE_URL = os.getenv("WEB_PUBLIC_BASE_URL", os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
 DEBUG_YTDLP = os.getenv("DEBUG_YTDLP", "0") == "1"
+YOUTUBE_ATTEMPT_SOCKET_TIMEOUT = 12
+YOUTUBE_ATTEMPT_RETRIES = 2
+YOUTUBE_ATTEMPT_FRAGMENT_RETRIES = 2
+YOUTUBE_THROTTLED_RATE = 100 * 1024
 SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "clipsave.sqlite3")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "").strip()
 
@@ -1423,9 +1427,10 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
         "no_warnings": quiet,
         "nocheckcertificate": True,
         "geo_bypass": True,
-        "retries": 20,
-        "fragment_retries": 20,
-        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
+        "file_access_retries": 2,
+        "socket_timeout": 20,
         "http_chunk_size": 10 * 1024 * 1024,
         "concurrent_fragment_downloads": 1,
         "skip_unavailable_fragments": False,
@@ -1596,83 +1601,39 @@ def dedupe_preserve_order(items: list[tuple[str, str]]) -> list[tuple[str, str]]
 
 
 def build_youtube_download_attempts(mode: str, format_id: str | None, max_height: int) -> list[tuple[str, str]]:
-    """
-    Build a flexible YouTube download strategy list.
+    """Build a short, bounded YouTube download strategy list.
 
-    Do not hard-lock to one codec. YouTube can return unstable media URLs for
-    a specific video/audio pair or CDN host. The goal is to stay within the
-    requested quality limit and try several equivalent full-quality variants:
-    different audio IDs, then different video codec families, then HLS/ready
-    streams. Ready streams are kept last because they may be lower quality.
+    The web service must not iterate through a large audio x video matrix: when
+    YouTube/GVS/HLS returns a slow or broken media URL, that can look like an
+    endless loop to the user. Keep only a few broad yt-dlp selectors and let
+    yt-dlp choose a working format inside each selector.
     """
     vf = youtube_video_filter(max_height)
 
-    attempts: list[tuple[str, str]] = []
-    current = get_format_string(mode, format_id, max_height=max_height)
-    attempts.append(("основной формат", current))
-
     if mode == "audio":
-        return dedupe_preserve_order(attempts)
-
-    # Audio order is intentionally not just "bestaudio". On some YouTube/GVS
-    # URLs the formal best audio (often 251 or 140) can hang, while 250 works.
-    audio_variants: list[tuple[str, str]] = [
-        ("Opus 70 kbps", "250"),
-        ("Opus 110/130 kbps", "251"),
-        ("M4A", "140"),
-        ("Opus 50 kbps", "249"),
-        ("Opus 70 kbps DRC", "250-drc"),
-        ("Opus 110/130 kbps DRC", "251-drc"),
-        ("M4A DRC", "140-drc"),
-    ]
+        return dedupe_preserve_order(
+            [
+                ("M4A/Opus аудио", "ba[ext=m4a]/ba[acodec^=opus]/ba/b"),
+                ("любое аудио", "ba/b"),
+            ]
+        )
 
     if mode == "pick" and format_id:
-        for audio_label, audio_fmt in audio_variants:
-            attempts.append((f"выбранный формат + {audio_label}", f"{format_id}+{audio_fmt}/{format_id}"))
-        attempts.extend(
+        return dedupe_preserve_order(
             [
-                ("выбранный формат + любое Opus-аудио", f"{format_id}+ba[acodec^=opus]/{format_id}"),
-                ("выбранный формат + любое M4A-аудио", f"{format_id}+ba[ext=m4a]/{format_id}"),
-                ("выбранный формат + любое аудио", f"{format_id}+ba/{format_id}"),
-            ]
-        )
-        return dedupe_preserve_order(attempts)
-
-    video_variants: list[tuple[str, str]] = [
-        ("лучшее видео", f"bv*{vf}"),
-        ("MP4-видео", f"bv*[ext=mp4]{vf}"),
-        ("H.264 MP4-видео", f"bv*[ext=mp4][vcodec^=avc1]{vf}"),
-        ("VP9 WebM-видео", f"bv*[vcodec^=vp9]{vf}"),
-        ("AV1 MP4-видео", f"bv*[ext=mp4][vcodec^=av01]{vf}"),
-    ]
-
-    # First try the same quality range with several explicit audio formats.
-    for video_label, video_fmt in video_variants:
-        for audio_label, audio_fmt in audio_variants:
-            attempts.append((f"{video_label} + {audio_label}", f"{video_fmt}+{audio_fmt}"))
-
-    # Then allow yt-dlp to pick audio by codec/container, still keeping the
-    # selected video quality range. These are broader than exact IDs above.
-    for video_label, video_fmt in video_variants:
-        attempts.extend(
-            [
-                (f"{video_label} + любое Opus-аудио", f"{video_fmt}+ba[acodec^=opus]"),
-                (f"{video_label} + любое M4A-аудио", f"{video_fmt}+ba[ext=m4a]"),
-                (f"{video_label} + любое аудио", f"{video_fmt}+ba"),
+                ("выбранный формат + аудио", f"{format_id}+ba/{format_id}"),
+                ("выбранный формат + M4A-аудио", f"{format_id}+ba[ext=m4a]/{format_id}"),
+                ("только выбранный формат", format_id),
             ]
         )
 
-    # HLS/ready streams are last. For some videos HLS is the only way to get a
-    # combined high-quality stream, but it must not skip fragments silently.
-    attempts.extend(
+    return dedupe_preserve_order(
         [
-            ("HLS MP4-поток", f"b[protocol^=m3u8][ext=mp4]{vf}"),
-            ("готовый MP4-поток", f"b[ext=mp4]{vf}"),
-            ("любой готовый поток", f"b{vf}"),
+            ("основной формат", f"bv*{vf}+ba/b{vf}/b"),
+            ("совместимый MP4/H.264", f"bv*[vcodec^=avc1]{vf}+ba[ext=m4a]/b[ext=mp4]{vf}/b"),
+            ("готовый MP4/любой поток", f"b[ext=mp4]{vf}/b{vf}/b"),
         ]
     )
-
-    return dedupe_preserve_order(attempts)
 
 
 def build_youtube_audio_first_attempts(max_height: int) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -1733,6 +1694,18 @@ def cleanup_temp_files_sync(task_id: str) -> None:
 def ydl_extract(url: str, opts: dict[str, Any], *, download: bool):
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=download)
+
+
+def apply_youtube_attempt_limits(opts: dict[str, Any]) -> dict[str, Any]:
+    limited = dict(opts)
+    limited["socket_timeout"] = YOUTUBE_ATTEMPT_SOCKET_TIMEOUT
+    limited["retries"] = YOUTUBE_ATTEMPT_RETRIES
+    limited["fragment_retries"] = YOUTUBE_ATTEMPT_FRAGMENT_RETRIES
+    limited["file_access_retries"] = YOUTUBE_ATTEMPT_RETRIES
+    limited["check_formats"] = True
+    limited["throttledratelimit"] = YOUTUBE_THROTTLED_RATE
+    limited.pop("http_chunk_size", None)
+    return limited
 
 
 def human_download_error(exc: Exception) -> str:
@@ -2200,7 +2173,7 @@ def sync_download_media(
     opts["postprocessor_hooks"] = [postprocessor_hook]
 
     if mode == "audio":
-        opts["format"] = "bestaudio/best"
+        opts["format"] = "ba[ext=m4a]/ba[acodec^=opus]/ba/b"
         opts["postprocessors"] = [
             {
                 "key": "FFmpegExtractAudio",
@@ -2258,7 +2231,7 @@ def sync_download_media(
         enforce_single_file_size_limit_by_info(downloaded_info, max_file_bytes)
         return downloaded_info
 
-    youtube_attempts = build_youtube_download_attempts(mode, format_id, max_height) if is_youtube_url(url) and mode != "audio" else []
+    youtube_attempts = build_youtube_download_attempts(mode, format_id, max_height) if is_youtube_url(url) else []
 
     def info_file_path(download_info: dict[str, Any]) -> str | None:
         rds = download_info.get("requested_downloads") or []
@@ -2483,88 +2456,52 @@ def sync_download_media(
         info = None
         last_error: Exception | None = None
 
-        primary_label, primary_format = youtube_attempts[0]
-        primary_opts = dict(opts)
-        primary_opts["format"] = primary_format
-        primary_opts["socket_timeout"] = 12
-        primary_opts["retries"] = 2
-        primary_opts["fragment_retries"] = 2
-        primary_opts.pop("http_chunk_size", None)
+        for attempt_index, (attempt_label, attempt_format) in enumerate(youtube_attempts, start=1):
+            ensure_task_not_cancelled(task_id)
+            cleanup_temp_files_sync(task_id)
 
-        logger.info("YouTube primary download attempt: %s format=%s", primary_label, primary_format)
+            schedule_task_update(
+                loop,
+                task_id,
+                status="processing",
+                status_label="Подбор формата",
+                detail=f"Пробую вариант {attempt_index}/{len(youtube_attempts)}: {attempt_label}",
+            )
 
-        try:
-            info = ydl_extract_checked(primary_opts)
-        except DownloadCancelledError:
-            raise
-        except Exception as exc:
-            last_error = exc
-            logger.warning("YouTube primary download attempt failed: %s format=%s err=%s", primary_label, primary_format, exc)
+            attempt_opts = apply_youtube_attempt_limits(opts)
+            attempt_opts["format"] = attempt_format
 
-        if info is None and mode != "pick":
+            logger.info(
+                "YouTube download attempt %s/%s: %s format=%s",
+                attempt_index,
+                len(youtube_attempts),
+                attempt_label,
+                attempt_format,
+            )
+
             try:
-                cleanup_temp_files_sync(task_id)
-                schedule_task_update(
-                    loop,
-                    task_id,
-                    status="processing",
-                    status_label="Повторная попытка",
-                    detail="Пробую резервный режим: сначала аудио, потом видео",
-                )
-                info = download_youtube_audio_first_fallback(opts)
+                info = ydl_extract_checked(attempt_opts)
+                break
             except DownloadCancelledError:
                 raise
             except Exception as exc:
                 last_error = exc
-                logger.warning("YouTube audio-first fallback failed. err=%s", exc)
-
-        if info is None:
-            ready_attempts = build_youtube_ready_stream_attempts(max_height)
-            for attempt_index, (attempt_label, attempt_format) in enumerate(ready_attempts, start=1):
-                ensure_task_not_cancelled(task_id)
-                cleanup_temp_files_sync(task_id)
-
-                schedule_task_update(
-                    loop,
-                    task_id,
-                    status="processing",
-                    status_label="Повторная попытка",
-                    detail=f"Пробую готовый поток: {attempt_label}",
-                )
-
-                attempt_opts = dict(opts)
-                attempt_opts["format"] = attempt_format
-                attempt_opts["socket_timeout"] = 12
-                attempt_opts["retries"] = 2
-                attempt_opts["fragment_retries"] = 2
-                attempt_opts.pop("http_chunk_size", None)
-
-                logger.info(
-                    "YouTube ready-stream attempt %s/%s: %s format=%s",
-                    attempt_index,
-                    len(ready_attempts),
+                logger.warning(
+                    "YouTube download attempt failed: %s format=%s err=%s",
                     attempt_label,
                     attempt_format,
+                    exc,
                 )
 
-                try:
-                    info = ydl_extract_checked(attempt_opts)
-                    break
-                except DownloadCancelledError:
-                    raise
-                except Exception as exc:
-                    last_error = exc
-                    logger.warning(
-                        "YouTube ready-stream attempt failed: %s format=%s err=%s",
-                        attempt_label,
-                        attempt_format,
-                        exc,
-                    )
-
         if info is None:
+            message = (
+                "Не удалось скачать видео: YouTube не отдал рабочий поток для текущего IP, "
+                "cookies или выбранного качества. Попробуйте другое качество, обновите cookies "
+                "или повторите попытку позже."
+            )
             if last_error is None:
-                raise RuntimeError("Не удалось скачать видео.")
-            raise RuntimeError(human_download_error(last_error)) from last_error
+                raise RuntimeError(message)
+            raise RuntimeError(message) from last_error
     else:
         try:
             info = ydl_extract_checked(opts)
