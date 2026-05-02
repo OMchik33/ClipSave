@@ -215,10 +215,38 @@ make_full_backup() {
   echo
   echo "Архив: $archive"
 
+  local service_was_active="no"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME"; then
+    service_was_active="yes"
+    section "Остановка ${SERVICE_NAME} для консистентного backup SQLite"
+    systemctl stop "$SERVICE_NAME"
+    ok "служба ${SERVICE_NAME} остановлена на время создания архива"
+  fi
+
+  local tar_status=0
+  set +e
   tar -czpf "$archive" \
     -C "$(dirname "$manifest")" "$(basename "$manifest")" \
     -C "$(dirname "$paths_file")" "$(basename "$paths_file")" \
     -C / -T "$paths_file"
+  tar_status=$?
+  set -e
+
+  if [[ "$service_was_active" == "yes" ]]; then
+    section "Запуск ${SERVICE_NAME} после backup"
+    systemctl start "$SERVICE_NAME" || warn "не удалось автоматически запустить ${SERVICE_NAME}. Проверь: systemctl status ${SERVICE_NAME} --no-pager -l"
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+      ok "служба ${SERVICE_NAME} снова запущена"
+    else
+      warn "служба ${SERVICE_NAME} сейчас не active. Проверь статус вручную."
+    fi
+  fi
+
+  if [[ "$tar_status" -ne 0 ]]; then
+    rm -f "$manifest" "$paths_file"
+    err "не удалось создать полный архив."
+    return "$tar_status"
+  fi
 
   mv -f "$manifest" "${archive}.manifest.txt"
   mv -f "$paths_file" "${archive}.paths.txt"
