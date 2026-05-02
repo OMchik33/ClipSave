@@ -1416,6 +1416,7 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
         "socket_timeout": 30,
         "http_chunk_size": 10 * 1024 * 1024,
         "concurrent_fragment_downloads": 1,
+        "skip_unavailable_fragments": False,
         "continuedl": True,
         "force_ipv4": True,
         "merge_output_format": "mp4",
@@ -1487,6 +1488,86 @@ def get_format_string(mode: str, format_id: str | None, max_height: int = 0) -> 
 
     return f"{direct_vk_selector}/bv*+ba/b"
 
+
+
+def is_youtube_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "music.youtube.com"} or host.endswith(".youtube.com")
+
+
+def youtube_video_filter(max_height: int) -> str:
+    if max_height and max_height > 0:
+        max_side = int(max_height) * 2
+        return f"[width<={max_side}][height<={max_side}]"
+    return ""
+
+
+def dedupe_preserve_order(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for label, fmt in items:
+        if not fmt or fmt in seen:
+            continue
+        seen.add(fmt)
+        result.append((label, fmt))
+    return result
+
+
+def build_youtube_download_attempts(mode: str, format_id: str | None, max_height: int) -> list[tuple[str, str]]:
+    """
+    YouTube may return unstable direct DASH URLs for some audio/video formats.
+    Try several full-quality strategies before giving up, instead of hanging on
+    the first automatically selected bestaudio/bestvideo pair.
+    """
+    vf = youtube_video_filter(max_height)
+
+    attempts: list[tuple[str, str]] = []
+    current = get_format_string(mode, format_id, max_height=max_height)
+    attempts.append(("основной формат", current))
+
+    if mode == "audio":
+        return dedupe_preserve_order(attempts)
+
+    if mode == "pick" and format_id:
+        attempts.extend(
+            [
+                ("выбранный формат + среднее Opus-аудио", f"{format_id}+ba[format_id^=250]/{format_id}+250/{format_id}"),
+                ("выбранный формат + Opus-аудио", f"{format_id}+ba[format_id^=251]/{format_id}+251/{format_id}"),
+                ("выбранный формат + M4A-аудио", f"{format_id}+ba[ext=m4a]/{format_id}+140/{format_id}"),
+                ("выбранный формат + любое аудио", f"{format_id}+ba/{format_id}"),
+            ]
+        )
+        return dedupe_preserve_order(attempts)
+
+    h264 = f"bv*[ext=mp4][vcodec^=avc1]{vf}"
+    mp4_any = f"bv*[ext=mp4]{vf}"
+    any_video = f"bv*{vf}"
+    hls_ready = f"b[protocol^=m3u8]{vf}"
+
+    attempts.extend(
+        [
+            ("H.264 MP4 + среднее Opus-аудио", f"{h264}+ba[format_id^=250]"),
+            ("H.264 MP4 + Opus-аудио", f"{h264}+ba[format_id^=251]"),
+            ("H.264 MP4 + M4A-аудио", f"{h264}+ba[ext=m4a]"),
+            ("H.264 MP4 + любое аудио", f"{h264}+ba"),
+            ("MP4-видео + среднее Opus-аудио", f"{mp4_any}+ba[format_id^=250]"),
+            ("MP4-видео + Opus-аудио", f"{mp4_any}+ba[format_id^=251]"),
+            ("любое видео + среднее Opus-аудио", f"{any_video}+ba[format_id^=250]"),
+            ("любое видео + Opus-аудио", f"{any_video}+ba[format_id^=251]"),
+            ("HLS MP4-поток", hls_ready),
+        ]
+    )
+    return dedupe_preserve_order(attempts)
+
+
+def cleanup_temp_files_sync(task_id: str) -> None:
+    pattern = f"*{task_id}*"
+    for path in DOWNLOAD_PATH.glob(pattern):
+        if path.is_file() and path.name.startswith("webtmp_"):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to delete temp file %s", path)
 
 def ydl_extract(url: str, opts: dict[str, Any], *, download: bool):
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -2005,60 +2086,111 @@ def sync_download_media(
         enforce_single_file_size_limit_by_info(downloaded_info, max_file_bytes)
         return downloaded_info
 
-    try:
-        info = ydl_extract_checked(opts)
-    except Exception as e1:
-        logger.warning("Primary download failed. err=%s", e1)
+    youtube_attempts = build_youtube_download_attempts(mode, format_id, max_height) if is_youtube_url(url) and mode != "audio" else []
 
-        if "cookiefile" in opts and is_format_or_cookie_related_error(e1):
-            logger.warning("Download failed with cookies, retry without cookies. err=%s", e1)
-            schedule_task_update(
-                loop,
-                task_id,
-                status="processing",
-                status_label="Повторная попытка",
-                detail="Cookies не подошли для этого видео, пробую скачать без cookies",
-            )
+    if youtube_attempts:
+        info = None
+        last_error: Exception | None = None
+        for attempt_index, (attempt_label, attempt_format) in enumerate(youtube_attempts, start=1):
+            ensure_task_not_cancelled(task_id)
+            attempt_opts = dict(opts)
+            attempt_opts["format"] = attempt_format
+            attempt_opts["socket_timeout"] = 12
+            attempt_opts["retries"] = 2
+            attempt_opts["fragment_retries"] = 2
+            attempt_opts.pop("http_chunk_size", None)
 
-            opts_no_cookie = make_no_cookie_opts(opts)
-            try:
-                info = ydl_extract_checked(opts_no_cookie)
-            except Exception as e_no_cookie_1:
-                logger.warning("No-cookie download failed, retry with ffmpeg downloader. err=%s", e_no_cookie_1)
+            if attempt_index > 1:
+                cleanup_temp_files_sync(task_id)
                 schedule_task_update(
                     loop,
                     task_id,
                     status="processing",
                     status_label="Повторная попытка",
-                    detail="Пробую резервный способ скачивания без cookies",
+                    detail=f"Пробую резервный вариант: {attempt_label}",
                 )
 
-                opts_no_cookie_ff = make_no_cookie_opts(opts)
-                opts_no_cookie_ff["downloader"] = "ffmpeg"
-
-                try:
-                    info = ydl_extract_checked(opts_no_cookie_ff)
-                except Exception as e_no_cookie_2:
-                    logger.warning("No-cookie fallback download failed. err=%s", e_no_cookie_2)
-                    raise RuntimeError(human_download_error(e_no_cookie_2)) from e_no_cookie_2
-        else:
-            logger.warning("Primary download failed, retry with ffmpeg downloader. err=%s", e1)
-            schedule_task_update(
-                loop,
-                task_id,
-                status="processing",
-                status_label="Повторная попытка",
-                detail="Пробую резервный способ скачивания",
+            logger.info(
+                "YouTube download attempt %s/%s: %s format=%s",
+                attempt_index,
+                len(youtube_attempts),
+                attempt_label,
+                attempt_format,
             )
 
-            opts_ff = dict(opts)
-            opts_ff["downloader"] = "ffmpeg"
-
             try:
-                info = ydl_extract_checked(opts_ff)
-            except Exception as e2:
-                logger.warning("Fallback download failed. err=%s", e2)
-                raise RuntimeError(human_download_error(e2)) from e2
+                info = ydl_extract_checked(attempt_opts)
+                break
+            except DownloadCancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "YouTube download attempt failed: %s format=%s err=%s",
+                    attempt_label,
+                    attempt_format,
+                    exc,
+                )
+
+        if info is None:
+            if last_error is None:
+                raise RuntimeError("Не удалось скачать видео.")
+            raise RuntimeError(human_download_error(last_error)) from last_error
+    else:
+        try:
+            info = ydl_extract_checked(opts)
+        except Exception as e1:
+            logger.warning("Primary download failed. err=%s", e1)
+
+            if "cookiefile" in opts and is_format_or_cookie_related_error(e1):
+                logger.warning("Download failed with cookies, retry without cookies. err=%s", e1)
+                schedule_task_update(
+                    loop,
+                    task_id,
+                    status="processing",
+                    status_label="Повторная попытка",
+                    detail="Cookies не подошли для этого видео, пробую скачать без cookies",
+                )
+
+                opts_no_cookie = make_no_cookie_opts(opts)
+                try:
+                    info = ydl_extract_checked(opts_no_cookie)
+                except Exception as e_no_cookie_1:
+                    logger.warning("No-cookie download failed, retry with ffmpeg downloader. err=%s", e_no_cookie_1)
+                    schedule_task_update(
+                        loop,
+                        task_id,
+                        status="processing",
+                        status_label="Повторная попытка",
+                        detail="Пробую резервный способ скачивания без cookies",
+                    )
+
+                    opts_no_cookie_ff = make_no_cookie_opts(opts)
+                    opts_no_cookie_ff["downloader"] = "ffmpeg"
+
+                    try:
+                        info = ydl_extract_checked(opts_no_cookie_ff)
+                    except Exception as e_no_cookie_2:
+                        logger.warning("No-cookie fallback download failed. err=%s", e_no_cookie_2)
+                        raise RuntimeError(human_download_error(e_no_cookie_2)) from e_no_cookie_2
+            else:
+                logger.warning("Primary download failed, retry with ffmpeg downloader. err=%s", e1)
+                schedule_task_update(
+                    loop,
+                    task_id,
+                    status="processing",
+                    status_label="Повторная попытка",
+                    detail="Пробую резервный способ скачивания",
+                )
+
+                opts_ff = dict(opts)
+                opts_ff["downloader"] = "ffmpeg"
+
+                try:
+                    info = ydl_extract_checked(opts_ff)
+                except Exception as e2:
+                    logger.warning("Fallback download failed. err=%s", e2)
+                    raise RuntimeError(human_download_error(e2)) from e2
 
     path = find_downloaded_file(info)
     if not path or not os.path.exists(path):
