@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import datetime as dt
 import hashlib
 import hmac
@@ -69,6 +70,8 @@ DEBUG_YTDLP = os.getenv("DEBUG_YTDLP", "0") == "1"
 YOUTUBE_ATTEMPT_SOCKET_TIMEOUT = 12
 YOUTUBE_ATTEMPT_RETRIES = 2
 YOUTUBE_ATTEMPT_FRAGMENT_RETRIES = 2
+YOUTUBE_ATTEMPT_INFO_TIMEOUT = 45
+YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT = 180
 YOUTUBE_THROTTLED_RATE = 100 * 1024
 SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "clipsave.sqlite3")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "").strip()
@@ -123,6 +126,10 @@ class DownloadCancelledError(RuntimeError):
 
 
 class RutubeGeoRestrictedError(RuntimeError):
+    pass
+
+
+class DownloadAttemptTimeoutError(RuntimeError):
     pass
 
 
@@ -1696,6 +1703,41 @@ def ydl_extract(url: str, opts: dict[str, Any], *, download: bool):
         return ydl.extract_info(url, download=download)
 
 
+def ydl_extract_with_timeout(
+    url: str,
+    opts: dict[str, Any],
+    *,
+    download: bool,
+    timeout_seconds: int | None,
+    task_id: str,
+    step_label: str,
+):
+    if not timeout_seconds:
+        return ydl_extract(url, opts, download=download)
+
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=f"clipsave-ytdlp-{task_id[:8]}",
+    )
+    future = executor.submit(ydl_extract, url, opts, download=download)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError as exc:
+        logger.warning(
+            "yt-dlp step timeout: task_id=%s step=%s timeout=%ss download=%s format=%s",
+            task_id,
+            step_label,
+            timeout_seconds,
+            download,
+            opts.get("format"),
+        )
+        raise DownloadAttemptTimeoutError(
+            f"Вариант не ответил за {timeout_seconds} сек.: {step_label}"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 def apply_youtube_attempt_limits(opts: dict[str, Any]) -> dict[str, Any]:
     limited = dict(opts)
     limited["socket_timeout"] = YOUTUBE_ATTEMPT_SOCKET_TIMEOUT
@@ -1713,6 +1755,9 @@ def human_download_error(exc: Exception) -> str:
     lower = raw.lower()
 
     if isinstance(exc, RutubeGeoRestrictedError):
+        return raw
+
+    if isinstance(exc, DownloadAttemptTimeoutError):
         return raw
 
     if "rutube" in lower and "options json" in lower and ("http error 404" in lower or "not found" in lower):
@@ -2211,7 +2256,12 @@ def sync_download_media(
         new_opts.pop("cookiefile", None)
         return new_opts
 
-    def ydl_extract_checked(source_opts: dict[str, Any]) -> dict[str, Any]:
+    def ydl_extract_checked(
+        source_opts: dict[str, Any],
+        *,
+        info_timeout: int | None = None,
+        download_timeout: int | None = None,
+    ) -> dict[str, Any]:
         ensure_task_not_cancelled(task_id)
         if max_file_bytes:
             check_opts = dict(source_opts)
@@ -2221,12 +2271,26 @@ def sync_download_media(
             check_opts["progress_hooks"] = []
             check_opts["postprocessor_hooks"] = []
             check_opts.pop("downloader", None)
-            check_info = ydl_extract(url, check_opts, download=False)
+            check_info = ydl_extract_with_timeout(
+                url,
+                check_opts,
+                download=False,
+                timeout_seconds=info_timeout,
+                task_id=task_id,
+                step_label="проверка формата",
+            )
             ensure_task_not_cancelled(task_id)
             enforce_single_file_size_limit_by_info(check_info, max_file_bytes)
 
         ensure_task_not_cancelled(task_id)
-        downloaded_info = ydl_extract(url, source_opts, download=True)
+        downloaded_info = ydl_extract_with_timeout(
+            url,
+            source_opts,
+            download=True,
+            timeout_seconds=download_timeout,
+            task_id=task_id,
+            step_label="скачивание",
+        )
         ensure_task_not_cancelled(task_id)
         enforce_single_file_size_limit_by_info(downloaded_info, max_file_bytes)
         return downloaded_info
@@ -2480,7 +2544,11 @@ def sync_download_media(
             )
 
             try:
-                info = ydl_extract_checked(attempt_opts)
+                info = ydl_extract_checked(
+                    attempt_opts,
+                    info_timeout=YOUTUBE_ATTEMPT_INFO_TIMEOUT,
+                    download_timeout=YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT,
+                )
                 break
             except DownloadCancelledError:
                 raise
