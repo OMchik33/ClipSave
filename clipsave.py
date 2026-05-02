@@ -118,6 +118,17 @@ class DownloadCancelledError(RuntimeError):
     pass
 
 
+class RutubeGeoRestrictedError(RuntimeError):
+    pass
+
+
+RUTUBE_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/147.0.0.0 Safari/537.36"
+)
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
   user_id TEXT PRIMARY KEY,
@@ -1496,6 +1507,76 @@ def is_youtube_url(url: str) -> bool:
     return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "music.youtube.com"} or host.endswith(".youtube.com")
 
 
+def is_rutube_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in {"rutube.ru", "www.rutube.ru"} or host.endswith(".rutube.ru")
+
+
+def extract_rutube_video_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    match = re.search(r"/(?:video|play/embed)/([0-9a-fA-F]{32})(?:/|$)", parsed.path)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
+def check_rutube_geo_restriction(url: str) -> None:
+    """Raise a clear error when Rutube reports country restrictions for this server IP.
+
+    yt-dlp may fail later with a confusing "options JSON: 404" for such videos.
+    The public Rutube metadata API can expose the current proxy country and
+    allowed/restricted country lists when requested with a browser-like UA.
+    """
+    if not is_rutube_url(url):
+        return
+
+    video_id = extract_rutube_video_id(url)
+    if not video_id:
+        return
+
+    api_url = f"https://rutube.ru/api/video/{video_id}/?no_404=true"
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "User-Agent": RUTUBE_BROWSER_USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            proxy_country = (response.headers.get("X-Proxy-Country") or "").strip().upper()
+            raw = response.read(1024 * 256).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code in {403, 404}:
+            raise RutubeGeoRestrictedError(
+                "Видео Rutube недоступно с текущего IP сервера. "
+                "Rutube не отдал данные для скачивания; вероятная причина — региональное ограничение."
+            ) from exc
+        return
+    except Exception:
+        logger.exception("Failed to check Rutube geo restrictions for url=%s", url)
+        return
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return
+
+    restrictions = data.get("restrictions") or {}
+    country = restrictions.get("country") or {}
+    allowed = {str(item).upper() for item in (country.get("allowed") or [])}
+    restricted = {str(item).upper() for item in (country.get("restricted") or [])}
+
+    if proxy_country and ((allowed and proxy_country not in allowed) or proxy_country in restricted):
+        allowed_text = ", ".join(sorted(allowed)) if allowed else "не указаны"
+        raise RutubeGeoRestrictedError(
+            "Видео недоступно с текущего IP сервера из-за региональных ограничений Rutube. "
+            f"Rutube определяет страну сервера как {proxy_country}. "
+            f"Разрешённые страны для этого видео: {allowed_text}."
+        )
+
+
 def youtube_video_filter(max_height: int) -> str:
     if max_height and max_height > 0:
         max_side = int(max_height) * 2
@@ -1658,6 +1739,15 @@ def human_download_error(exc: Exception) -> str:
     raw = str(exc)
     lower = raw.lower()
 
+    if isinstance(exc, RutubeGeoRestrictedError):
+        return raw
+
+    if "rutube" in lower and "options json" in lower and ("http error 404" in lower or "not found" in lower):
+        return (
+            "Видео Rutube недоступно с текущего IP сервера. "
+            "Возможная причина — региональные ограничения Rutube или запрет доступа к потоку для страны сервера."
+        )
+
     if "no video formats found" in lower or "requested format is not available" in lower:
         return (
             "Не удалось найти подходящий видеоформат. Попробуй выбрать другое качество "
@@ -1735,6 +1825,7 @@ async def analyze_url_for_user(user_id: str, url: str) -> dict[str, Any]:
 
 def sync_analyze_url(user_id: str, url: str) -> dict[str, Any]:
     url = clean_youtube_url(url.strip())
+    check_rutube_geo_restriction(url)
     settings = _get_settings_sync()
     max_height = setting_int(settings, "max_video_height", 1080)
     bypass_user_limits = should_bypass_user_limits(settings, user_id)
@@ -1995,6 +2086,7 @@ def sync_download_media(
             requested_height = max_height
         max_height = requested_height
     title = title_hint or "Видео"
+    check_rutube_geo_restriction(url)
     last_progress_emit = 0.0
 
     def progress_hook(data: dict[str, Any]) -> None:
@@ -3426,7 +3518,10 @@ async def api_analyze(request: Request, url: str = Form(...)):
         raise HTTPException(status_code=400, detail="Нужна корректная ссылка http/https.")
 
     await mark_user_seen(user_id, touch_activity=True)
-    data = await analyze_url_for_user(user_id, url)
+    try:
+        data = await analyze_url_for_user(user_id, url)
+    except RutubeGeoRestrictedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, **data}
 
 
