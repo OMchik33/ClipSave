@@ -67,11 +67,11 @@ DATA_PATH = resolve_path_env(os.getenv("DATA_PATH", "data"), BASE_DIR / "data")
 LOG_PATH = resolve_path_env(os.getenv("LOG_PATH", "logs"), BASE_DIR / "logs")
 PUBLIC_BASE_URL = os.getenv("WEB_PUBLIC_BASE_URL", os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
 DEBUG_YTDLP = os.getenv("DEBUG_YTDLP", "0") == "1"
-YOUTUBE_ATTEMPT_SOCKET_TIMEOUT = 12
-YOUTUBE_ATTEMPT_RETRIES = 2
-YOUTUBE_ATTEMPT_FRAGMENT_RETRIES = 2
-YOUTUBE_ATTEMPT_INFO_TIMEOUT = 45
-YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT = 180
+YOUTUBE_ATTEMPT_SOCKET_TIMEOUT = 15
+YOUTUBE_ATTEMPT_RETRIES = 3
+YOUTUBE_ATTEMPT_FRAGMENT_RETRIES = 3
+YOUTUBE_ATTEMPT_INFO_TIMEOUT = 60
+YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT = 240
 YOUTUBE_THROTTLED_RATE = 100 * 1024
 SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "clipsave.sqlite3")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "").strip()
@@ -136,7 +136,7 @@ class DownloadAttemptTimeoutError(RuntimeError):
 RUTUBE_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/147.0.0.0 Safari/537.36"
+    "Chrome/131.0.0.0 Safari/537.36"
 )
 
 
@@ -1434,23 +1434,32 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
         "no_warnings": quiet,
         "nocheckcertificate": True,
         "geo_bypass": True,
-        "retries": 5,
-        "fragment_retries": 5,
-        "file_access_retries": 2,
-        "socket_timeout": 20,
-        "http_chunk_size": 10 * 1024 * 1024,
+        "retries": 10,
+        "fragment_retries": 10,
+        "file_access_retries": 5,
+        "socket_timeout": 30,
+        "http_chunk_size": 5 * 1024 * 1024,
         "concurrent_fragment_downloads": 1,
         "skip_unavailable_fragments": False,
         "continuedl": True,
         "force_ipv4": True,
         "merge_output_format": "mp4",
         "ignore_no_formats_error": skip_download,
+        "throttledratelimit": 50 * 1024,
+        "extractor_args": {
+            "youtube": {
+                "player_skip": ["webpage", "configs"],
+                "player_client": ["web", "web_embedded", "web_safari"],   # убрали ios/android
+                "skip": ["translated_subs"],
+            }
+        },
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0.0.0 Safari/537.36"
-            )
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
         },
         "remote_components": ["ejs:github"],
         "progress_hooks": [],
@@ -1459,11 +1468,11 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
 
     if node_path:
         opts["js_runtimes"] = {"node": {"path": node_path}}
-    else:
-        opts["js_runtimes"] = {}
 
     if cookie_file:
         opts["cookiefile"] = str(cookie_file)
+        # Если cookies свежие — можно попробовать вернуть ios, но сейчас лучше web
+        opts["extractor_args"]["youtube"]["player_client"] = ["web", "web_safari"]
 
     if DEBUG_YTDLP:
         opts["verbose"] = True
@@ -1472,33 +1481,14 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
 
 
 def get_format_string(mode: str, format_id: str | None, max_height: int = 0) -> str:
-    """
-    Build yt-dlp format selector.
-
-    For horizontal videos:
-      720p  -> 1280x720
-      1080p -> 1920x1080
-
-    For vertical videos and YouTube Shorts:
-      720p  -> 720x1280
-      1080p -> 1080x1920
-
-    The limit is applied to the largest frame side, so vertical Shorts
-    are not rejected by a simple height<=720 filter.
-
-    VK video may expose direct ready-to-download MP4 formats named
-    url1080/url720/url480/etc. Prefer them before HLS/fMP4 formats,
-    because some VK HLS/fMP4 manifests can fail with "Conflicting range".
-    """
     direct_vk_formats = ["url2160", "url1440", "url1080", "url720", "url480", "url360", "url240", "url144"]
 
     if max_height and max_height > 0:
-        max_height_int = int(max_height)
-        max_side = max_height_int * 2
+        max_side = int(max_height) * 2
         video_filter = f"[width<={max_side}][height<={max_side}]"
         direct_vk_selector = "/".join(
             fmt for fmt in direct_vk_formats
-            if int(fmt.replace("url", "")) <= max_height_int
+            if int(fmt.replace("url", "")) <= max_height
         )
     else:
         video_filter = ""
@@ -1510,8 +1500,8 @@ def get_format_string(mode: str, format_id: str | None, max_height: int = 0) -> 
     if video_filter:
         return f"{direct_vk_selector}/bv*{video_filter}+ba/b{video_filter}/bv*+ba/b"
 
-    return f"{direct_vk_selector}/bv*+ba/b"
-
+    # Более агрессивный селектор для YouTube
+    return f"{direct_vk_selector}/bv*+ba/b/bestvideo+bestaudio/best"
 
 
 def is_youtube_url(url: str) -> bool:
@@ -1608,73 +1598,46 @@ def dedupe_preserve_order(items: list[tuple[str, str]]) -> list[tuple[str, str]]
 
 
 def build_youtube_download_attempts(mode: str, format_id: str | None, max_height: int) -> list[tuple[str, str]]:
-    """Build a short, bounded YouTube download strategy list.
-
-    The web service must not iterate through a large audio x video matrix: when
-    YouTube/GVS/HLS returns a slow or broken media URL, that can look like an
-    endless loop to the user. Keep only a few broad yt-dlp selectors and let
-    yt-dlp choose a working format inside each selector.
-    """
     vf = youtube_video_filter(max_height)
 
     if mode == "audio":
-        return dedupe_preserve_order(
-            [
-                ("M4A/Opus аудио", "ba[ext=m4a]/ba[acodec^=opus]/ba/b"),
-                ("любое аудио", "ba/b"),
-            ]
-        )
+        return dedupe_preserve_order([
+            ("Лучшее аудио", "bestaudio/best"),
+            ("M4A Opus", "ba[ext=m4a]/ba/b"),
+        ])
 
     if mode == "pick" and format_id:
-        return dedupe_preserve_order(
-            [
-                ("выбранный формат + аудио", f"{format_id}+ba/{format_id}"),
-                ("выбранный формат + M4A-аудио", f"{format_id}+ba[ext=m4a]/{format_id}"),
-                ("только выбранный формат", format_id),
-            ]
-        )
+        return dedupe_preserve_order([
+            ("Выбранный формат", f"{format_id}+ba/{format_id}"),
+        ])
 
-    return dedupe_preserve_order(
-        [
-            ("основной формат", f"bv*{vf}+ba/b{vf}/b"),
-            ("совместимый MP4/H.264", f"bv*[vcodec^=avc1]{vf}+ba[ext=m4a]/b[ext=mp4]{vf}/b"),
-            ("готовый MP4/любой поток", f"b[ext=mp4]{vf}/b{vf}/b"),
-        ]
-    )
+    return dedupe_preserve_order([
+        ("Лучшее возможное качество", "bestvideo+bestaudio/best"),
+        ("H.264 + M4A (стабильный)", f"bv*[vcodec^=avc1]{vf}+ba[ext=m4a]/b[ext=mp4]{vf}"),
+        ("Готовый MP4", f"b[ext=mp4]{vf}/bv*+ba/b"),
+        ("Формат 18 (fallback 360p)", "18"),
+    ])
 
 
 def build_youtube_audio_first_attempts(max_height: int) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """
-    Build two-phase YouTube fallback strategies.
-
-    Audio is downloaded first because YouTube/GVS can hang on a specific audio
-    media URL. Once a working audio file is downloaded, video strategies can be
-    tried without downloading audio again.
-    """
     vf = youtube_video_filter(max_height)
-
-    audio_variants: list[tuple[str, str]] = [
-        ("Opus 70 kbps", "250"),
-        ("Opus 110/130 kbps", "251"),
-        ("M4A", "140"),
-        ("Opus 50 kbps", "249"),
-        ("Opus 70 kbps DRC", "250-drc"),
-        ("Opus 110/130 kbps DRC", "251-drc"),
-        ("M4A DRC", "140-drc"),
-        ("любое Opus-аудио", "ba[acodec^=opus]"),
-        ("любое M4A-аудио", "ba[ext=m4a]"),
-        ("любое аудио", "ba"),
+    audio = [
+        ("bestaudio", "bestaudio/best"),
+        ("Opus 160kbps", "251"),
+        ("M4A 128kbps", "140"),
+        ("Opus 70kbps", "250"),
+        ("любое аудио", "ba/b"),
     ]
-
-    video_variants: list[tuple[str, str]] = [
+    video = [
         ("лучшее видео", f"bv*{vf}"),
-        ("MP4-видео", f"bv*[ext=mp4]{vf}"),
-        ("H.264 MP4-видео", f"bv*[ext=mp4][vcodec^=avc1]{vf}"),
-        ("VP9 WebM-видео", f"bv*[vcodec^=vp9]{vf}"),
-        ("AV1 MP4-видео", f"bv*[ext=mp4][vcodec^=av01]{vf}"),
+        ("H.264 MP4", f"bv*[vcodec^=avc1]{vf}"),
+        ("AV1", f"bv*[vcodec^=av01]{vf}"),
+        ("VP9", f"bv*[vcodec^=vp9]{vf}"),
     ]
+    return dedupe_preserve_order(audio), dedupe_preserve_order(video)
 
-    return dedupe_preserve_order(audio_variants), dedupe_preserve_order(video_variants)
+
+# === ИСПРАВЛЕНИЕ АНАЛИЗА ФОРМАТОВ ===
 
 
 def build_youtube_ready_stream_attempts(max_height: int) -> list[tuple[str, str]]:
@@ -1846,61 +1809,59 @@ def sync_analyze_url(user_id: str, url: str) -> dict[str, Any]:
     check_rutube_geo_restriction(url)
     settings = _get_settings_sync()
     max_height = setting_int(settings, "max_video_height", 1080)
-    bypass_user_limits = should_bypass_user_limits(settings, user_id)
-    allow_unlimited_quality = bypass_user_limits or setting_bool(settings, "allow_unlimited_quality") or max_height == 0
-    opts_info = build_base_ydl_opts(user_id, skip_download=True, quiet=True)
-    info = ydl_extract(url, opts_info, download=False)
+    bypass = should_bypass_user_limits(settings, user_id)
+    allow_unlimited = bypass or setting_bool(settings, "allow_unlimited_quality") or max_height == 0
+
+    opts = build_base_ydl_opts(user_id, skip_download=True, quiet=True)
+    opts["format"] = "all"   # важно: просим все форматы
+
+    info = ydl_extract(url, opts, download=False)
 
     title = info.get("title") or "Видео"
     thumbnail_url = info.get("thumbnail")
     formats = info.get("formats") or []
 
     available = []
-    seen_labels: set[str] = set()
+    seen = set()
 
     for f in formats:
         fid = f.get("format_id")
-        ext = (f.get("ext") or "").lower()
-        height = f.get("height")
-        vcodec = f.get("vcodec")
-
         if not fid:
             continue
-        if ext == "mhtml" or "storyboard" in str(fid).lower():
+        height = f.get("height") or 0
+        if height == 0:
             continue
-        if not vcodec or vcodec == "none":
-            continue
-
-        if not height:
-            match = re.search(r"(\d{3,4})p", f.get("format", "") or "")
-            if match:
-                height = int(match.group(1))
-
-        if not height:
-            continue
-        if not allow_unlimited_quality and height > max_height:
+        if not allow_unlimited and height > max_height:
             continue
 
+        ext = (f.get("ext") or "").lower()
+        vcodec = f.get("vcodec") or ""
+        acodec = f.get("acodec") or ""
         size = f.get("filesize") or f.get("filesize_approx") or 0
-        label = f"{height}p {ext}"
-        if fmt_size(size):
-            label += f" ({fmt_size(size)})"
 
-        if label in seen_labels:
+        label = f"{height}p"
+        if "avc1" in vcodec:
+            label += " (H.264)"
+        elif "av01" in vcodec:
+            label += " (AV1)"
+        if acodec == "none":
+            label += " (video only)"
+        if size > 0:
+            label += f" ~{fmt_size(size)}"
+
+        if label in seen:
             continue
+        seen.add(label)
 
-        seen_labels.add(label)
-        available.append(
-            {
-                "label": label,
-                "format_id": fid,
-                "height": height,
-                "ext": ext,
-                "filesize": size,
-            }
-        )
+        available.append({
+            "label": label,
+            "format_id": fid,
+            "height": height,
+            "ext": ext,
+            "filesize": size,
+        })
 
-    available.sort(key=lambda x: x.get("height", 0), reverse=True)
+    available.sort(key=lambda x: x["height"], reverse=True)
 
     return {
         "title": title,
@@ -1908,7 +1869,7 @@ def sync_analyze_url(user_id: str, url: str) -> dict[str, Any]:
         "thumbnail_url": thumbnail_url,
         "formats": available,
         "settings": {
-            "quality_options": allowed_quality_options(settings, bypass_user_limits=bypass_user_limits),
+            "quality_options": allowed_quality_options(settings, bypass_user_limits=bypass),
             "default_user_quality": setting_int(settings, "default_user_quality", 1080),
             "experimental_proxy_download_enabled": setting_bool(settings, "experimental_proxy_download_enabled"),
         },
@@ -2399,9 +2360,9 @@ def sync_download_media(
             audio_opts = dict(base_opts)
             audio_opts["format"] = audio_format
             audio_opts["outtmpl"] = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_audio_%(id)s.%(format_id)s.%(ext)s")
-            audio_opts["socket_timeout"] = 10
-            audio_opts["retries"] = 1
-            audio_opts["fragment_retries"] = 1
+            audio_opts["socket_timeout"] = 12
+            audio_opts["retries"] = 2
+            audio_opts["fragment_retries"] = 2
             audio_opts.pop("http_chunk_size", None)
 
             logger.info(
@@ -2437,15 +2398,15 @@ def sync_download_media(
                     task_id,
                     status="processing",
                     status_label="Подбор видео",
-                    detail=f"Аудио скачано. Пробую видео: {video_label}",
+                    detail=f"Аудио готово. Пробую видео: {video_label}",
                 )
 
                 video_opts = dict(base_opts)
                 video_opts["format"] = video_format
                 video_opts["outtmpl"] = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_video_%(id)s.%(format_id)s.%(ext)s")
-                video_opts["socket_timeout"] = 10
-                video_opts["retries"] = 1
-                video_opts["fragment_retries"] = 1
+                video_opts["socket_timeout"] = 12
+                video_opts["retries"] = 2
+                video_opts["fragment_retries"] = 2
                 video_opts.pop("http_chunk_size", None)
 
                 logger.info(
@@ -2514,7 +2475,7 @@ def sync_download_media(
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError("Не удалось подобрать рабочую аудио/видео связку.")
+        raise RuntimeError("Не удалось подобрать рабочую пару аудио+видео.")
 
     if youtube_attempts:
         info = None
@@ -2562,14 +2523,16 @@ def sync_download_media(
                 )
 
         if info is None:
-            message = (
-                "Не удалось скачать видео: YouTube не отдал рабочий поток для текущего IP, "
-                "cookies или выбранного качества. Попробуйте другое качество, обновите cookies "
-                "или повторите попытку позже."
-            )
-            if last_error is None:
-                raise RuntimeError(message)
-            raise RuntimeError(message) from last_error
+            # Последний шанс — audio-first + без cookies
+            try:
+                schedule_task_update(
+                    loop, task_id, status="processing", status_label="Fallback", detail="Пробую audio-first fallback"
+                )
+                info = download_youtube_audio_first_fallback(opts)
+            except Exception as final_exc:
+                if last_error:
+                    raise RuntimeError("Не удалось скачать видео даже с audio-first. Обновите cookies и yt-dlp.") from last_error
+                raise RuntimeError(human_download_error(final_exc)) from final_exc
     else:
         try:
             info = ydl_extract_checked(opts)
