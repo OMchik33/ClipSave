@@ -71,7 +71,7 @@ YOUTUBE_ATTEMPT_SOCKET_TIMEOUT = 15
 YOUTUBE_ATTEMPT_RETRIES = 3
 YOUTUBE_ATTEMPT_FRAGMENT_RETRIES = 3
 YOUTUBE_ATTEMPT_INFO_TIMEOUT = 60
-YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT = 240
+YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT = 0
 YOUTUBE_THROTTLED_RATE = 100 * 1024
 SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "clipsave.sqlite3")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "").strip()
@@ -1442,14 +1442,9 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
         "concurrent_fragment_downloads": 1,
         "skip_unavailable_fragments": False,
         "continuedl": True,
-        "force_ipv4": True,
-        "merge_output_format": "mp4",
         "ignore_no_formats_error": skip_download,
-        "throttledratelimit": 50 * 1024,
         "extractor_args": {
             "youtube": {
-                "player_skip": ["webpage", "configs"],
-                "player_client": ["web", "web_embedded", "web_safari"],   # убрали ios/android
                 "skip": ["translated_subs"],
             }
         },
@@ -1471,8 +1466,6 @@ def build_base_ydl_opts(user_id: str, *, skip_download: bool, quiet: bool, task_
 
     if cookie_file:
         opts["cookiefile"] = str(cookie_file)
-        # Если cookies свежие — можно попробовать вернуть ios, но сейчас лучше web
-        opts["extractor_args"]["youtube"]["player_client"] = ["web", "web_safari"]
 
     if DEBUG_YTDLP:
         opts["verbose"] = True
@@ -1603,19 +1596,20 @@ def build_youtube_download_attempts(mode: str, format_id: str | None, max_height
     if mode == "audio":
         return dedupe_preserve_order([
             ("Лучшее аудио", "bestaudio/best"),
-            ("M4A Opus", "ba[ext=m4a]/ba/b"),
+            ("M4A", "ba[ext=m4a]/ba/b"),
         ])
 
     if mode == "pick" and format_id:
         return dedupe_preserve_order([
-            ("Выбранный формат", f"{format_id}+ba/{format_id}"),
+            ("Выбранный формат", format_id),
+            ("Выбранный формат + лучшее аудио", f"{format_id}+ba/b"),
         ])
 
     return dedupe_preserve_order([
-        ("Лучшее возможное качество", "bestvideo+bestaudio/best"),
-        ("H.264 + M4A (стабильный)", f"bv*[vcodec^=avc1]{vf}+ba[ext=m4a]/b[ext=mp4]{vf}"),
+        ("Лучшее возможное качество", f"bv*{vf}+ba/b{vf}/bestvideo+bestaudio/best"),
+        ("H.264 + M4A, стабильный вариант", f"bv*[vcodec^=avc1]{vf}+ba[ext=m4a]/b[ext=mp4]{vf}"),
         ("Готовый MP4", f"b[ext=mp4]{vf}/bv*+ba/b"),
-        ("Формат 18 (fallback 360p)", "18"),
+        ("Формат 18, аварийный fallback 360p", "18"),
     ])
 
 
@@ -1708,7 +1702,7 @@ def apply_youtube_attempt_limits(opts: dict[str, Any]) -> dict[str, Any]:
     limited["fragment_retries"] = YOUTUBE_ATTEMPT_FRAGMENT_RETRIES
     limited["file_access_retries"] = YOUTUBE_ATTEMPT_RETRIES
     limited["check_formats"] = True
-    limited["throttledratelimit"] = YOUTUBE_THROTTLED_RATE
+    limited.pop("throttledratelimit", None)
     limited.pop("http_chunk_size", None)
     return limited
 
