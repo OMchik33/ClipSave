@@ -780,6 +780,7 @@ function applySettingsToForm(settings) {
   setCheckboxValue('setting-unlimited-dir', settings.allow_unlimited_download_dir);
   setCheckboxValue('setting-unlimited-quality', settings.allow_unlimited_quality);
   setCheckboxValue('setting-admin-bypass-limits', settings.admin_bypass_user_limits);
+  setCheckboxValue('setting-merge-video-to-mp4', settings.merge_video_to_mp4);
   setCheckboxValue('setting-proxy-enabled', settings.experimental_proxy_download_enabled);
   setInputValue('setting-proxy-max-gb', settings.experimental_proxy_max_file_gb);
   setInputValue('setting-proxy-minutes', settings.experimental_proxy_max_duration_minutes);

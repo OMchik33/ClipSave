@@ -355,6 +355,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "admin_bypass_user_limits": "0",
     "user_quality_selection_enabled": "1",
     "default_user_quality": "1080",
+    "merge_video_to_mp4": "1",
     "experimental_proxy_download_enabled": "0",
     "experimental_proxy_max_file_gb": "2",
     "experimental_proxy_max_duration_minutes": "30",
@@ -472,6 +473,7 @@ async def update_settings_from_form(form: dict[str, Any]) -> dict[str, str]:
         "admin_bypass_user_limits": "1" if str(form.get("admin_bypass_user_limits", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "user_quality_selection_enabled": "1" if str(form.get("user_quality_selection_enabled", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "default_user_quality": str(normalize_quality_height(form.get("default_user_quality"), allow_unlimited=True)),
+        "merge_video_to_mp4": "1" if str(form.get("merge_video_to_mp4", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "experimental_proxy_download_enabled": "1" if str(form.get("experimental_proxy_download_enabled", "")).lower() in {"1", "true", "on", "yes"} else "0",
         "experimental_proxy_max_file_gb": normalize_gb_input(form.get("experimental_proxy_max_file_gb"), current.get("experimental_proxy_max_file_gb", DEFAULT_SETTINGS["experimental_proxy_max_file_gb"])),
         "experimental_proxy_max_duration_minutes": str(max(1, setting_int(form, "experimental_proxy_max_duration_minutes", setting_int(current, "experimental_proxy_max_duration_minutes", 30)))),
@@ -524,6 +526,7 @@ def settings_public_view(settings: dict[str, str]) -> dict[str, Any]:
         "admin_bypass_user_limits": setting_bool(settings, "admin_bypass_user_limits"),
         "user_quality_selection_enabled": setting_bool(settings, "user_quality_selection_enabled"),
         "default_user_quality": default_quality,
+        "merge_video_to_mp4": setting_bool(settings, "merge_video_to_mp4"),
         "experimental_proxy_download_enabled": setting_bool(settings, "experimental_proxy_download_enabled"),
         "experimental_proxy_max_file_gb": settings.get("experimental_proxy_max_file_gb", "2"),
         "experimental_proxy_max_duration_minutes": setting_int(settings, "experimental_proxy_max_duration_minutes", 30),
@@ -2270,7 +2273,25 @@ def sync_download_media(
 
     def run_ffmpeg_merge(video_path: str, audio_path: str, output_path: str) -> None:
         audio_ext = Path(audio_path).suffix.lower()
-        if audio_ext in {".m4a", ".mp4", ".aac"}:
+        merge_to_mp4 = setting_bool(settings, "merge_video_to_mp4")
+
+        if not merge_to_mp4:
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                video_path,
+                "-i",
+                audio_path,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c",
+                "copy",
+                output_path,
+            ]
+        elif audio_ext in {".m4a", ".mp4", ".aac"}:
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -2420,7 +2441,8 @@ def sync_download_media(
                         raise RuntimeError("Видеофайл не найден после скачивания.")
 
                     video_id = video_info.get("id") or audio_info.get("id") or hashlib.md5(url.encode()).hexdigest()[:12]
-                    merged_path = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_{video_id}_merged.mp4")
+                    merged_ext = "mp4" if setting_bool(settings, "merge_video_to_mp4") else "mkv"
+                    merged_path = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_{video_id}_merged.{merged_ext}")
                     Path(merged_path).unlink(missing_ok=True)
                     run_ffmpeg_merge(video_path, audio_path, merged_path)
 
@@ -2475,49 +2497,66 @@ def sync_download_media(
         info = None
         last_error: Exception | None = None
 
-        for attempt_index, (attempt_label, attempt_format) in enumerate(youtube_attempts, start=1):
-            ensure_task_not_cancelled(task_id)
-            cleanup_temp_files_sync(task_id)
-
-            schedule_task_update(
-                loop,
-                task_id,
-                status="processing",
-                status_label="Подбор формата",
-                detail=f"Пробую вариант {attempt_index}/{len(youtube_attempts)}: {attempt_label}",
-            )
-
-            attempt_opts = apply_youtube_attempt_limits(opts)
-            attempt_opts["format"] = attempt_format
-
-            logger.info(
-                "YouTube download attempt %s/%s: %s format=%s",
-                attempt_index,
-                len(youtube_attempts),
-                attempt_label,
-                attempt_format,
-            )
-
+        if mode == "bestq":
             try:
-                info = ydl_extract_checked(
-                    attempt_opts,
-                    info_timeout=YOUTUBE_ATTEMPT_INFO_TIMEOUT,
-                    download_timeout=YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT,
+                schedule_task_update(
+                    loop,
+                    task_id,
+                    status="processing",
+                    status_label="Подбор дорожек",
+                    detail="Сразу подбираю и скачиваю аудио- и видеодорожку",
                 )
-                break
+                info = download_youtube_audio_first_fallback(opts)
             except DownloadCancelledError:
                 raise
             except Exception as exc:
                 last_error = exc
-                logger.warning(
-                    "YouTube download attempt failed: %s format=%s err=%s",
-                    attempt_label,
-                    attempt_format,
-                    exc,
-                )
+                logger.warning("YouTube audio-first primary flow failed. err=%s", exc)
 
         if info is None:
-            # Последний шанс — audio-first + без cookies
+            for attempt_index, (attempt_label, attempt_format) in enumerate(youtube_attempts, start=1):
+                ensure_task_not_cancelled(task_id)
+                cleanup_temp_files_sync(task_id)
+
+                schedule_task_update(
+                    loop,
+                    task_id,
+                    status="processing",
+                    status_label="Подбор формата",
+                    detail=f"Пробую резервный вариант {attempt_index}/{len(youtube_attempts)}: {attempt_label}",
+                )
+
+                attempt_opts = apply_youtube_attempt_limits(opts)
+                attempt_opts["format"] = attempt_format
+
+                logger.info(
+                    "YouTube download fallback attempt %s/%s: %s format=%s",
+                    attempt_index,
+                    len(youtube_attempts),
+                    attempt_label,
+                    attempt_format,
+                )
+
+                try:
+                    info = ydl_extract_checked(
+                        attempt_opts,
+                        info_timeout=YOUTUBE_ATTEMPT_INFO_TIMEOUT,
+                        download_timeout=YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT,
+                    )
+                    break
+                except DownloadCancelledError:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning(
+                        "YouTube download fallback attempt failed: %s format=%s err=%s",
+                        attempt_label,
+                        attempt_format,
+                        exc,
+                    )
+
+        if info is None and mode != "bestq":
+            # Сохраняем прежний резервный сценарий для нестандартных YouTube-режимов.
             try:
                 schedule_task_update(
                     loop, task_id, status="processing", status_label="Fallback", detail="Пробую audio-first fallback"
@@ -2527,6 +2566,11 @@ def sync_download_media(
                 if last_error:
                     raise RuntimeError("Не удалось скачать видео даже с audio-first. Обновите cookies и yt-dlp.") from last_error
                 raise RuntimeError(human_download_error(final_exc)) from final_exc
+
+        if info is None:
+            if last_error:
+                raise RuntimeError("Не удалось скачать видео. Обновите cookies и yt-dlp.") from last_error
+            raise RuntimeError("Не удалось скачать видео.")
     else:
         try:
             info = ydl_extract_checked(opts)
