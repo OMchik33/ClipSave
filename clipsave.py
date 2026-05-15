@@ -72,6 +72,15 @@ YOUTUBE_ATTEMPT_RETRIES = 3
 YOUTUBE_ATTEMPT_FRAGMENT_RETRIES = 3
 YOUTUBE_ATTEMPT_INFO_TIMEOUT = 60
 YOUTUBE_ATTEMPT_DOWNLOAD_TIMEOUT = 0
+YOUTUBE_SELECTION_TIMEOUT = 240
+YOUTUBE_STREAM_PROBE_TIMEOUT = 14
+YOUTUBE_STREAM_PROBE_SOCKET_TIMEOUT = 6
+YOUTUBE_STREAM_PROBE_RETRIES = 0
+YOUTUBE_AUDIO_PROBE_MIN_BYTES = 256 * 1024
+YOUTUBE_VIDEO_PROBE_MIN_BYTES = 2 * 1024 * 1024
+YOUTUBE_STREAM_PROBE_WORKERS = 3
+YOUTUBE_AUDIO_PROBE_CANDIDATE_LIMIT = 3
+YOUTUBE_VIDEO_PROBE_CANDIDATE_LIMIT = 3
 YOUTUBE_THROTTLED_RATE = 100 * 1024
 SQLITE_DB_NAME = os.getenv("SQLITE_DB_NAME", "clipsave.sqlite3")
 SQLITE_PATH = os.getenv("SQLITE_PATH", "").strip()
@@ -130,6 +139,10 @@ class RutubeGeoRestrictedError(RuntimeError):
 
 
 class DownloadAttemptTimeoutError(RuntimeError):
+    pass
+
+
+class StreamProbeSatisfied(RuntimeError):
     pass
 
 
@@ -1649,6 +1662,34 @@ def build_youtube_ready_stream_attempts(max_height: int) -> list[tuple[str, str]
 
 
 
+def youtube_opts_with_player_clients(base_opts: dict[str, Any], player_clients: list[str]) -> dict[str, Any]:
+    profiled = dict(base_opts)
+    extractor_args = dict(profiled.get("extractor_args") or {})
+    youtube_args = dict(extractor_args.get("youtube") or {})
+    for key, value in list(youtube_args.items()):
+        if isinstance(value, list):
+            youtube_args[key] = list(value)
+    youtube_args["player_client"] = list(player_clients)
+    extractor_args["youtube"] = youtube_args
+    profiled["extractor_args"] = extractor_args
+    return profiled
+
+
+def build_youtube_audio_first_profiles(base_opts: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    profiles: list[tuple[str, dict[str, Any]]] = [
+        ("основной профиль", dict(base_opts)),
+        ("default + web_embedded", youtube_opts_with_player_clients(base_opts, ["default", "web_embedded"])),
+    ]
+    if base_opts.get("cookiefile"):
+        profiles.extend(
+            [
+                ("web_creator + cookies", youtube_opts_with_player_clients(base_opts, ["web_creator"])),
+                ("tv_downgraded + cookies", youtube_opts_with_player_clients(base_opts, ["tv_downgraded"])),
+            ]
+        )
+    return profiles
+
+
 def cleanup_temp_files_sync(task_id: str) -> None:
     pattern = f"*{task_id}*"
     for path in DOWNLOAD_PATH.glob(pattern):
@@ -1704,7 +1745,7 @@ def apply_youtube_attempt_limits(opts: dict[str, Any]) -> dict[str, Any]:
     limited["retries"] = YOUTUBE_ATTEMPT_RETRIES
     limited["fragment_retries"] = YOUTUBE_ATTEMPT_FRAGMENT_RETRIES
     limited["file_access_retries"] = YOUTUBE_ATTEMPT_RETRIES
-    limited["check_formats"] = True
+    limited["check_formats"] = "selected"
     limited.pop("throttledratelimit", None)
     limited.pop("http_chunk_size", None)
     return limited
@@ -2360,134 +2401,331 @@ def sync_download_media(
         audio_attempts, video_attempts = build_youtube_audio_first_attempts(max_height)
         last_error: Exception | None = None
 
-        for audio_index, (audio_label, audio_format) in enumerate(audio_attempts, start=1):
+        def probe_stream_attempts_parallel(
+            stream_kind: str,
+            profile_label: str,
+            profile_opts: dict[str, Any],
+            candidates: list[tuple[str, str]],
+        ) -> list[tuple[str, str]]:
             ensure_task_not_cancelled(task_id)
-            cleanup_temp_files_sync(task_id)
+
+            if stream_kind == "audio":
+                probe_candidates = candidates[:YOUTUBE_AUDIO_PROBE_CANDIDATE_LIMIT]
+                min_bytes = YOUTUBE_AUDIO_PROBE_MIN_BYTES
+                status_label = "Проверка аудио"
+                detail_prefix = "Параллельно проверяю аудиодорожки"
+            else:
+                probe_candidates = candidates[:YOUTUBE_VIDEO_PROBE_CANDIDATE_LIMIT]
+                min_bytes = YOUTUBE_VIDEO_PROBE_MIN_BYTES
+                status_label = "Проверка видео"
+                detail_prefix = "Параллельно проверяю видеодорожки"
+
+            if len(probe_candidates) <= 1:
+                return candidates
 
             schedule_task_update(
                 loop,
                 task_id,
                 status="processing",
-                status_label="Подбор аудио",
-                detail=f"Пробую аудио: {audio_label}",
+                status_label=status_label,
+                detail=f"{detail_prefix}: {len(probe_candidates)} варианта, {profile_label}",
             )
 
-            audio_opts = dict(base_opts)
-            audio_opts["format"] = audio_format
-            audio_opts["outtmpl"] = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_audio_%(id)s.%(format_id)s.%(ext)s")
-            audio_opts["socket_timeout"] = 12
-            audio_opts["retries"] = 2
-            audio_opts["fragment_retries"] = 2
-            audio_opts.pop("http_chunk_size", None)
-
-            logger.info(
-                "YouTube audio-first audio attempt %s/%s: %s format=%s",
-                audio_index,
-                len(audio_attempts),
-                audio_label,
-                audio_format,
+            timeout_seconds = YOUTUBE_STREAM_PROBE_TIMEOUT
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(YOUTUBE_STREAM_PROBE_WORKERS, len(probe_candidates)),
+                thread_name_prefix=f"clipsave-stream-probe-{task_id[:8]}",
             )
+            futures: dict[concurrent.futures.Future[Any], tuple[str, str]] = {}
+
+            def run_probe(stream_label: str, stream_format: str) -> bool:
+                probe_token = hashlib.md5(f"{task_id}:{stream_kind}:{profile_label}:{stream_format}".encode("utf-8")).hexdigest()[:10]
+                probe_prefix = f"webtmp_{user_id}_{task_id}_probe_{stream_kind}_{probe_token}_"
+                probe_opts = dict(profile_opts)
+                probe_opts["format"] = stream_format
+                probe_opts["outtmpl"] = str(DOWNLOAD_PATH / f"{probe_prefix}%(id)s.%(format_id)s.%(ext)s")
+                probe_opts["quiet"] = True
+                probe_opts["no_warnings"] = True
+                probe_opts["noprogress"] = True
+                probe_opts["socket_timeout"] = YOUTUBE_STREAM_PROBE_SOCKET_TIMEOUT
+                probe_opts["retries"] = YOUTUBE_STREAM_PROBE_RETRIES
+                probe_opts["fragment_retries"] = YOUTUBE_STREAM_PROBE_RETRIES
+                probe_opts["file_access_retries"] = YOUTUBE_STREAM_PROBE_RETRIES
+                probe_opts["continuedl"] = False
+                probe_opts["overwrites"] = True
+                probe_opts["check_formats"] = False
+                probe_opts["postprocessors"] = []
+                probe_opts["postprocessor_hooks"] = []
+                probe_opts.pop("http_chunk_size", None)
+                probe_opts.pop("throttledratelimit", None)
+                probe_opts.pop("downloader", None)
+
+                def probe_progress_hook(data: dict[str, Any]) -> None:
+                    ensure_task_not_cancelled(task_id)
+                    status = data.get("status")
+                    if status == "downloading":
+                        downloaded = int(data.get("downloaded_bytes") or 0)
+                        if downloaded >= min_bytes:
+                            raise StreamProbeSatisfied(
+                                f"Поток {stream_kind} отдал {downloaded} байт."
+                            )
+                    elif status == "finished":
+                        raise StreamProbeSatisfied(f"Поток {stream_kind} завершил тестовую загрузку.")
+
+                probe_opts["progress_hooks"] = [probe_progress_hook]
+
+                try:
+                    ydl_extract(url, probe_opts, download=True)
+                    logger.info(
+                        "YouTube %s stream probe OK by completion: profile=%s stream=%s format=%s",
+                        stream_kind,
+                        profile_label,
+                        stream_label,
+                        stream_format,
+                    )
+                    return True
+                except StreamProbeSatisfied:
+                    logger.info(
+                        "YouTube %s stream probe OK by bytes: profile=%s stream=%s format=%s min_bytes=%s",
+                        stream_kind,
+                        profile_label,
+                        stream_label,
+                        stream_format,
+                        min_bytes,
+                    )
+                    return True
+                except DownloadCancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "YouTube %s stream probe failed: profile=%s stream=%s format=%s err=%s",
+                        stream_kind,
+                        profile_label,
+                        stream_label,
+                        stream_format,
+                        exc,
+                    )
+                    return False
+                finally:
+                    for path in DOWNLOAD_PATH.glob(f"{probe_prefix}*"):
+                        if path.is_file():
+                            try:
+                                path.unlink(missing_ok=True)
+                            except Exception:
+                                logger.exception("Failed to delete stream probe temp file %s", path)
 
             try:
-                audio_info = ydl_extract_checked(audio_opts)
-                audio_path = info_file_path(audio_info)
-                if not audio_path or not os.path.exists(audio_path):
-                    raise RuntimeError("Аудиофайл не найден после скачивания.")
-            except DownloadCancelledError:
-                raise
-            except Exception as exc:
-                last_error = exc
-                logger.warning(
-                    "YouTube audio-first audio attempt failed: %s format=%s err=%s",
-                    audio_label,
-                    audio_format,
-                    exc,
-                )
-                continue
+                for stream_label, stream_format in probe_candidates:
+                    future = executor.submit(run_probe, stream_label, stream_format)
+                    futures[future] = (stream_label, stream_format)
 
-            for video_index, (video_label, video_format) in enumerate(video_attempts, start=1):
+                done, pending = concurrent.futures.wait(
+                    futures,
+                    timeout=timeout_seconds,
+                    return_when=concurrent.futures.ALL_COMPLETED,
+                )
+
+                successful_formats: set[str] = set()
+                for future in done:
+                    stream_label, stream_format = futures[future]
+                    try:
+                        if future.result():
+                            successful_formats.add(stream_format)
+                    except DownloadCancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "YouTube %s stream probe crashed: profile=%s stream=%s format=%s err=%s",
+                            stream_kind,
+                            profile_label,
+                            stream_label,
+                            stream_format,
+                            exc,
+                        )
+
+                for future in pending:
+                    stream_label, stream_format = futures[future]
+                    future.cancel()
+                    logger.warning(
+                        "YouTube %s stream probe timed out: profile=%s stream=%s format=%s timeout=%ss",
+                        stream_kind,
+                        profile_label,
+                        stream_label,
+                        stream_format,
+                        timeout_seconds,
+                    )
+
+                if not successful_formats:
+                    logger.warning(
+                        "YouTube %s stream probe found no confirmed streams; preserving original order. profile=%s",
+                        stream_kind,
+                        profile_label,
+                    )
+                    return candidates
+
+                confirmed = [item for item in candidates if item[1] in successful_formats]
+                unconfirmed = [item for item in candidates if item[1] not in successful_formats]
+                return confirmed + unconfirmed
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+        for profile_index, (profile_label, profile_base_opts) in enumerate(
+            build_youtube_audio_first_profiles(base_opts),
+            start=1,
+        ):
+            ensure_task_not_cancelled(task_id)
+            logger.info(
+                "YouTube audio-first profile %s: %s",
+                profile_index,
+                profile_label,
+            )
+
+            ordered_audio_attempts = probe_stream_attempts_parallel(
+                "audio",
+                profile_label,
+                profile_base_opts,
+                audio_attempts,
+            )
+
+            for audio_index, (audio_label, audio_format) in enumerate(ordered_audio_attempts, start=1):
                 ensure_task_not_cancelled(task_id)
+                cleanup_temp_files_sync(task_id)
 
                 schedule_task_update(
                     loop,
                     task_id,
                     status="processing",
-                    status_label="Подбор видео",
-                    detail=f"Аудио готово. Пробую видео: {video_label}",
+                    status_label="Подбор аудио",
+                    detail=f"{profile_label}: пробую аудио {audio_label}",
                 )
 
-                video_opts = dict(base_opts)
-                video_opts["format"] = video_format
-                video_opts["outtmpl"] = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_video_%(id)s.%(format_id)s.%(ext)s")
-                video_opts["socket_timeout"] = 12
-                video_opts["retries"] = 2
-                video_opts["fragment_retries"] = 2
-                video_opts.pop("http_chunk_size", None)
+                audio_opts = dict(profile_base_opts)
+                audio_opts["format"] = audio_format
+                audio_opts["outtmpl"] = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_audio_%(id)s.%(format_id)s.%(ext)s")
+                audio_opts["socket_timeout"] = 12
+                audio_opts["retries"] = 2
+                audio_opts["fragment_retries"] = 2
+                audio_opts.pop("http_chunk_size", None)
 
                 logger.info(
-                    "YouTube audio-first video attempt %s/%s with audio %s: %s format=%s",
-                    video_index,
-                    len(video_attempts),
+                    "YouTube audio-first audio attempt profile=%s %s/%s: %s format=%s",
+                    profile_label,
+                    audio_index,
+                    len(ordered_audio_attempts),
                     audio_label,
-                    video_label,
-                    video_format,
+                    audio_format,
                 )
 
-                video_path = None
                 try:
-                    video_info = ydl_extract_checked(video_opts)
-                    video_path = info_file_path(video_info)
-                    if not video_path or not os.path.exists(video_path):
-                        raise RuntimeError("Видеофайл не найден после скачивания.")
-
-                    video_id = video_info.get("id") or audio_info.get("id") or hashlib.md5(url.encode()).hexdigest()[:12]
-                    merged_ext = "mp4" if setting_bool(settings, "merge_video_to_mp4") else "mkv"
-                    merged_path = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_{video_id}_merged.{merged_ext}")
-                    Path(merged_path).unlink(missing_ok=True)
-                    run_ffmpeg_merge(video_path, audio_path, merged_path)
-
-                    merged_info = dict(video_info)
-                    merged_info["filepath"] = merged_path
-                    merged_info["filename"] = merged_path
-                    merged_info["_filename"] = merged_path
-                    merged_info["requested_downloads"] = [{"filepath": merged_path}]
-                    if not merged_info.get("title"):
-                        merged_info["title"] = audio_info.get("title")
-                    if not merged_info.get("thumbnail"):
-                        merged_info["thumbnail"] = audio_info.get("thumbnail")
-
-                    try:
-                        Path(video_path).unlink(missing_ok=True)
-                    except Exception:
-                        logger.exception("Failed to delete temp video %s", video_path)
-                    try:
-                        Path(audio_path).unlink(missing_ok=True)
-                    except Exception:
-                        logger.exception("Failed to delete temp audio %s", audio_path)
-
-                    return merged_info
+                    audio_info = ydl_extract_checked(audio_opts)
+                    audio_path = info_file_path(audio_info)
+                    if not audio_path or not os.path.exists(audio_path):
+                        raise RuntimeError("Аудиофайл не найден после скачивания.")
                 except DownloadCancelledError:
                     raise
                 except Exception as exc:
                     last_error = exc
                     logger.warning(
-                        "YouTube audio-first video attempt failed: audio=%s video=%s format=%s err=%s",
+                        "YouTube audio-first audio attempt failed: profile=%s %s format=%s err=%s",
+                        profile_label,
+                        audio_label,
+                        audio_format,
+                        exc,
+                    )
+                    continue
+
+                ordered_video_attempts = probe_stream_attempts_parallel(
+                    "video",
+                    profile_label,
+                    profile_base_opts,
+                    video_attempts,
+                )
+
+                for video_index, (video_label, video_format) in enumerate(ordered_video_attempts, start=1):
+                    ensure_task_not_cancelled(task_id)
+
+                    schedule_task_update(
+                        loop,
+                        task_id,
+                        status="processing",
+                        status_label="Подбор видео",
+                        detail=f"{profile_label}: аудио готово. Пробую видео {video_label}",
+                    )
+
+                    video_opts = dict(profile_base_opts)
+                    video_opts["format"] = video_format
+                    video_opts["outtmpl"] = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_video_%(id)s.%(format_id)s.%(ext)s")
+                    video_opts["socket_timeout"] = 12
+                    video_opts["retries"] = 2
+                    video_opts["fragment_retries"] = 2
+                    video_opts.pop("http_chunk_size", None)
+
+                    logger.info(
+                        "YouTube audio-first video attempt profile=%s %s/%s with audio %s: %s format=%s",
+                        profile_label,
+                        video_index,
+                        len(ordered_video_attempts),
                         audio_label,
                         video_label,
                         video_format,
-                        exc,
                     )
-                    if video_path:
+
+                    video_path = None
+                    try:
+                        video_info = ydl_extract_checked(video_opts)
+                        video_path = info_file_path(video_info)
+                        if not video_path or not os.path.exists(video_path):
+                            raise RuntimeError("Видеофайл не найден после скачивания.")
+
+                        video_id = video_info.get("id") or audio_info.get("id") or hashlib.md5(url.encode()).hexdigest()[:12]
+                        merged_ext = "mp4" if setting_bool(settings, "merge_video_to_mp4") else "mkv"
+                        merged_path = str(DOWNLOAD_PATH / f"webtmp_{user_id}_{task_id}_{video_id}_merged.{merged_ext}")
+                        Path(merged_path).unlink(missing_ok=True)
+                        run_ffmpeg_merge(video_path, audio_path, merged_path)
+
+                        merged_info = dict(video_info)
+                        merged_info["filepath"] = merged_path
+                        merged_info["filename"] = merged_path
+                        merged_info["_filename"] = merged_path
+                        merged_info["requested_downloads"] = [{"filepath": merged_path}]
+                        if not merged_info.get("title"):
+                            merged_info["title"] = audio_info.get("title")
+                        if not merged_info.get("thumbnail"):
+                            merged_info["thumbnail"] = audio_info.get("thumbnail")
+
                         try:
                             Path(video_path).unlink(missing_ok=True)
                         except Exception:
-                            logger.exception("Failed to delete failed temp video %s", video_path)
-                    continue
+                            logger.exception("Failed to delete temp video %s", video_path)
+                        try:
+                            Path(audio_path).unlink(missing_ok=True)
+                        except Exception:
+                            logger.exception("Failed to delete temp audio %s", audio_path)
 
-            try:
-                Path(audio_path).unlink(missing_ok=True)
-            except Exception:
-                logger.exception("Failed to delete failed temp audio %s", audio_path)
+                        return merged_info
+                    except DownloadCancelledError:
+                        raise
+                    except Exception as exc:
+                        last_error = exc
+                        logger.warning(
+                            "YouTube audio-first video attempt failed: profile=%s audio=%s video=%s format=%s err=%s",
+                            profile_label,
+                            audio_label,
+                            video_label,
+                            video_format,
+                            exc,
+                        )
+                        if video_path:
+                            try:
+                                Path(video_path).unlink(missing_ok=True)
+                            except Exception:
+                                logger.exception("Failed to delete failed temp video %s", video_path)
+                        continue
+
+                try:
+                    Path(audio_path).unlink(missing_ok=True)
+                except Exception:
+                    logger.exception("Failed to delete failed temp audio %s", audio_path)
 
         if last_error is not None:
             raise last_error
@@ -2514,8 +2752,13 @@ def sync_download_media(
                 logger.warning("YouTube audio-first primary flow failed. err=%s", exc)
 
         if info is None:
+            fallback_selection_started = time.monotonic()
             for attempt_index, (attempt_label, attempt_format) in enumerate(youtube_attempts, start=1):
                 ensure_task_not_cancelled(task_id)
+                if time.monotonic() - fallback_selection_started > YOUTUBE_SELECTION_TIMEOUT:
+                    raise DownloadAttemptTimeoutError(
+                        f"Подбор резервных YouTube-форматов занял больше {YOUTUBE_SELECTION_TIMEOUT} сек."
+                    )
                 cleanup_temp_files_sync(task_id)
 
                 schedule_task_update(
